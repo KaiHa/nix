@@ -27,6 +27,8 @@ rec {
     '';
   });
 
+  editline = pkgs.editline or (pkgs.callPackage ./editline.nix {});
+
   configureFlags =
     [ "--disable-init-state"
       "--enable-gc"

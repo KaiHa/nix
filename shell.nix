@@ -9,7 +9,7 @@ with import ./release-common.nix { inherit pkgs; };
 
   buildInputs =
     [ curl bison flex libxml2 libxslt
-      bzip2 xz brotli
+      bzip2 xz brotli editline
       pkgconfig sqlite libsodium boehmgc
       docbook5 docbook5_xsl
       autoconf-archive
