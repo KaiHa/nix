@@ -29,6 +29,8 @@ rec {
     '';
   });
 
+  editline = pkgs.editline or (pkgs.callPackage ./editline.nix {});
+
   configureFlags =
     [ "--disable-init-state"
       "--enable-gc"
@@ -64,6 +66,7 @@ rec {
     preConfigure = ":"; # override normal 'preConfigure', not needed when building from git
   }))
       bzip2 xz brotli zstd
+      editline
       openssl pkgconfig sqlite boehmgc
       boost
 
