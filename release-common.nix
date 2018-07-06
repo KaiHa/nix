@@ -63,7 +63,7 @@ rec {
 
     preConfigure = ":"; # override normal 'preConfigure', not needed when building from git
   }))
-      bzip2 xz brotli
+      bzip2 xz brotli zstd
       openssl pkgconfig sqlite boehmgc
       boost
 

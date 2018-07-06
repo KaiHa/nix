@@ -13,11 +13,36 @@
 #include <brotli/encode.h>
 #endif // HAVE_BROTLI
 
+#if HAVE_ZSTD
+#include <zstd.h>
+// Not set by earlier versions, so be sure it's set
+#ifndef ZSTD_CLEVEL_DEFAULT
+#  define ZSTD_CLEVEL_DEFAULT 3
+#endif
+#endif
+
+#include <algorithm>
 #include <iostream>
 
 namespace nix {
 
 static const size_t bufSize = 32 * 1024;
+
+static const int COMPRESSION_LEVEL_DEFAULT = -1;
+
+static unsigned checkLevel(unsigned min, unsigned max, unsigned methodDefault, std::string method, int level) {
+    if (level == COMPRESSION_LEVEL_DEFAULT)
+        return methodDefault;
+    if (level < 0)
+        throw CompressionError("compression level must be a non-negative integer");
+
+    unsigned l = static_cast<unsigned>(level);
+    if (min <= l && l <= max)
+        return l;
+
+    throw CompressionError("requested compression level '%u' not valid for method '%s': must be [%u,%u] (default=%u)",
+            l, method, min, max, methodDefault);
+}
 
 static void decompressNone(Source & source, Sink & sink)
 {
@@ -199,6 +224,48 @@ static void decompressBrotli(Source & source, Sink & sink)
 #endif // HAVE_BROTLI
 }
 
+#if HAVE_ZSTD
+static void decompressZstd(Source & source, Sink & sink)
+{
+  auto *s = ZSTD_createDStream();
+  if (!s)
+    throw CompressionError("unable to initialize zstd decoder");
+
+  Finally free([s]() { ZSTD_freeDStream(s); });
+
+  size_t toRead = ZSTD_initDStream(s);
+  if (ZSTD_isError(toRead))
+    throw CompressionError("unable to initialize zstd streaming decoder");
+
+  std::vector<uint8_t> inbuf(ZSTD_DStreamInSize());
+  std::vector<uint8_t> outbuf(ZSTD_DStreamOutSize());
+
+  while (true) {
+    checkInterrupt();
+
+    size_t read = 0;
+    try {
+      read = source.read(inbuf.data(), toRead);
+    } catch (EndOfFile &) {
+      // *** This is different than others! ***
+      // We're done if no more input
+      return;
+    }
+
+    ZSTD_inBuffer input{inbuf.data(), read, 0};
+
+    while (input.pos < input.size) {
+      checkInterrupt();
+      ZSTD_outBuffer output{outbuf.data(), outbuf.size(), 0};
+      toRead = ZSTD_decompressStream(s, &output, &input);
+      if (ZSTD_isError(toRead))
+        throw CompressionError("error while decompressing zstd data");
+      sink(outbuf.data(), output.pos);
+    }
+  }
+}
+#endif // HAVE_ZSTD
+
 ref<std::string> decompress(const std::string & method, const std::string & in)
 {
     StringSource source(in);
@@ -217,6 +284,10 @@ void decompress(const std::string & method, Source & source, Sink & sink)
         return decompressBzip2(source, sink);
     else if (method == "br")
         return decompressBrotli(source, sink);
+#if HAVE_ZSTD
+    else if (method == "zstd")
+        return decompressZstd(source, sink);
+#endif
     else
         throw UnknownCompressionMethod("unknown compression method '%s'", method);
 }
@@ -224,7 +295,10 @@ void decompress(const std::string & method, Source & source, Sink & sink)
 struct NoneSink : CompressionSink
 {
     Sink & nextSink;
-    NoneSink(Sink & nextSink) : nextSink(nextSink) { }
+    NoneSink(Sink & nextSink, int level = COMPRESSION_LEVEL_DEFAULT) : nextSink(nextSink) {
+        if (level != COMPRESSION_LEVEL_DEFAULT)
+            printError("Warning: requested compression level '%d' not supported by compression method 'none'", level);
+    }
     void finish() override { flush(); }
     void write(const unsigned char * data, size_t len) override { nextSink(data, len); }
 };
@@ -237,8 +311,8 @@ struct XzSink : CompressionSink
     bool finished = false;
 
     template <typename F>
-    XzSink(Sink & nextSink, F&& initEncoder) : nextSink(nextSink) {
-        lzma_ret ret = initEncoder();
+    XzSink(Sink & nextSink, F&& initEncoder, int level = COMPRESSION_LEVEL_DEFAULT) : nextSink(nextSink) {
+        lzma_ret ret = initEncoder(checkLevel(0, 9, LZMA_PRESET_DEFAULT, "xz", level));
         if (ret != LZMA_OK)
             throw CompressionError("unable to initialise lzma encoder");
         // FIXME: apply the x86 BCJ filter?
@@ -246,9 +320,9 @@ struct XzSink : CompressionSink
         strm.next_out = outbuf;
         strm.avail_out = sizeof(outbuf);
     }
-    XzSink(Sink & nextSink) : XzSink(nextSink, [this]() {
-        return lzma_easy_encoder(&strm, 6, LZMA_CHECK_CRC64);
-    }) {}
+    XzSink(Sink & nextSink, int level = COMPRESSION_LEVEL_DEFAULT) : XzSink(nextSink, [this](unsigned level) {
+        return lzma_easy_encoder(&strm, level, LZMA_CHECK_CRC64);
+    }, level) {}
 
     ~XzSink()
     {
@@ -305,11 +379,11 @@ struct XzSink : CompressionSink
 #ifdef HAVE_LZMA_MT
 struct ParallelXzSink : public XzSink
 {
-  ParallelXzSink(Sink &nextSink) : XzSink(nextSink, [this]() {
+  ParallelXzSink(Sink &nextSink, int level) : XzSink(nextSink, [this](unsigned level) {
         lzma_mt mt_options = {};
         mt_options.flags = 0;
         mt_options.timeout = 300; // Using the same setting as the xz cmd line
-        mt_options.preset = LZMA_PRESET_DEFAULT;
+        mt_options.preset = level;
         mt_options.filters = NULL;
         mt_options.check = LZMA_CHECK_CRC64;
         mt_options.threads = lzma_cputhreads();
@@ -319,7 +393,7 @@ struct ParallelXzSink : public XzSink
         // FIXME: maybe use lzma_stream_encoder_mt_memusage() to control the
         // number of threads.
         return lzma_stream_encoder_mt(&strm, &mt_options);
-  }) {}
+  }, level) {}
 };
 #endif
 
@@ -330,10 +404,11 @@ struct BzipSink : CompressionSink
     bz_stream strm;
     bool finished = false;
 
-    BzipSink(Sink & nextSink) : nextSink(nextSink)
+    BzipSink(Sink & nextSink, int level = COMPRESSION_LEVEL_DEFAULT) : nextSink(nextSink)
     {
         memset(&strm, 0, sizeof(strm));
-        int ret = BZ2_bzCompressInit(&strm, 9, 0, 30);
+        auto l = checkLevel(1, 9, 9, "bzip2", level);
+        int ret = BZ2_bzCompressInit(&strm, l, 0, 30);
         if (ret != BZ_OK)
             throw CompressionError("unable to initialise bzip2 encoder");
 
@@ -433,9 +508,11 @@ struct LambdaCompressionSink : CompressionSink
 
 struct BrotliCmdSink : LambdaCompressionSink
 {
-    BrotliCmdSink(Sink& nextSink)
-        : LambdaCompressionSink(nextSink, [](const std::string& data) {
-            return runProgram(BROTLI, true, {}, data);
+    BrotliCmdSink(Sink& nextSink, int level = COMPRESSION_LEVEL_DEFAULT)
+        : LambdaCompressionSink(nextSink, [level](const std::string& data) {
+            // Hard-code values from brotli manpage
+            std::string levelArg = fmt("-%u", checkLevel(0, 11, 11, "brotli", level));
+            return runProgram(BROTLI, true, {levelArg}, data);
         })
     {
     }
@@ -449,11 +526,16 @@ struct BrotliSink : CompressionSink
     BrotliEncoderState *state;
     bool finished = false;
 
-    BrotliSink(Sink & nextSink) : nextSink(nextSink)
+    BrotliSink(Sink & nextSink, int level = COMPRESSION_LEVEL_DEFAULT) : nextSink(nextSink)
     {
         state = BrotliEncoderCreateInstance(nullptr, nullptr, nullptr);
         if (!state)
             throw CompressionError("unable to initialise brotli encoder");
+
+        if (!BrotliEncoderSetParameter(state, BROTLI_PARAM_QUALITY,
+                checkLevel(BROTLI_MIN_QUALITY, BROTLI_MAX_QUALITY,
+                    BROTLI_DEFAULT_QUALITY, "brotli", level)))
+            throw CompressionError("failure setting requested compression level for brotli encoder");
     }
 
     ~BrotliSink()
@@ -530,36 +612,100 @@ struct BrotliSink : CompressionSink
 };
 #endif // HAVE_BROTLI
 
-ref<CompressionSink> makeCompressionSink(const std::string & method, Sink & nextSink, const bool parallel)
+#if HAVE_ZSTD
+struct ZstdSink: CompressionSink
+{
+    Sink & nextSink;
+    std::vector<uint8_t> outbuf;
+    ZSTD_CStream *state;
+
+    bool finished = false;
+
+    ZstdSink(Sink & nextSink, int level = COMPRESSION_LEVEL_DEFAULT)
+        : nextSink(nextSink), outbuf(std::max<size_t>(ZSTD_CStreamOutSize(), BUFSIZ))
+    {
+        state = ZSTD_createCStream();
+        if (!state)
+            throw CompressionError("unable to initialise zstd encoder");
+
+        auto r = ZSTD_initCStream(state, checkLevel(1, 19, ZSTD_CLEVEL_DEFAULT, "zstd", level));
+        if (ZSTD_isError(r))
+          throw CompressionError("unable to initialise zstd encoder");
+    }
+
+    ~ZstdSink()
+    {
+        ZSTD_freeCStream(state);
+    }
+
+    void finish() override
+    {
+        flush();
+        assert(!finished);
+
+        ZSTD_outBuffer output{outbuf.data(), outbuf.size(), 0};
+
+        auto r = ZSTD_endStream(state, &output);
+        if (r > 0)
+           throw CompressionError("zstd not flushed, bytes remaining: %zd", r);
+        else if (ZSTD_isError(r))
+          throw CompressionError("error finish'ing zstd stream");
+
+        nextSink(outbuf.data(), output.pos);
+    }
+
+    void write(const unsigned char * data, size_t len) override
+    {
+        ZSTD_inBuffer input{data, len, 0};
+        while (input.pos < input.size) {
+          checkInterrupt();
+          ZSTD_outBuffer output{outbuf.data(), outbuf.size(), 0};
+          auto r = ZSTD_compressStream(state, &output, &input);
+          if (ZSTD_isError(r))
+            throw CompressionError("error compressing with zstd");
+          // (zstd suggests amount that should be 'read' next,
+          // which we ignore since we can't make use of it currently)
+
+          nextSink(outbuf.data(), output.pos);
+        }
+    }
+};
+#endif // HAVE_ZSTD
+
+ref<CompressionSink> makeCompressionSink(const std::string & method, Sink & nextSink, const bool parallel, int level)
 {
     if (parallel) {
 #ifdef HAVE_LZMA_MT
         if (method == "xz")
-            return make_ref<ParallelXzSink>(nextSink);
+            return make_ref<ParallelXzSink>(nextSink, level);
 #endif
         printMsg(lvlError, format("Warning: parallel compression requested but not supported for method '%1%', falling back to single-threaded compression") % method);
     }
 
     if (method == "none")
-        return make_ref<NoneSink>(nextSink);
+        return make_ref<NoneSink>(nextSink, level);
     else if (method == "xz")
-        return make_ref<XzSink>(nextSink);
+        return make_ref<XzSink>(nextSink, level);
     else if (method == "bzip2")
-        return make_ref<BzipSink>(nextSink);
+        return make_ref<BzipSink>(nextSink, level);
     else if (method == "br")
 #if HAVE_BROTLI
-        return make_ref<BrotliSink>(nextSink);
+        return make_ref<BrotliSink>(nextSink, level);
 #else
-        return make_ref<BrotliCmdSink>(nextSink);
+        return make_ref<BrotliCmdSink>(nextSink, level);
+#endif
+#if HAVE_ZSTD
+    else if (method == "zstd")
+        return make_ref<ZstdSink>(nextSink, level);
 #endif
     else
         throw UnknownCompressionMethod(format("unknown compression method '%s'") % method);
 }
 
-ref<std::string> compress(const std::string & method, const std::string & in, const bool parallel)
+ref<std::string> compress(const std::string & method, const std::string & in, const bool parallel, int level)
 {
     StringSink ssink;
-    auto sink = makeCompressionSink(method, ssink, parallel);
+    auto sink = makeCompressionSink(method, ssink, parallel, level);
     (*sink)(in);
     sink->finish();
     return ssink.s;

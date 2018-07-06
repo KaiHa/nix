@@ -149,7 +149,7 @@ void BinaryCacheStore::addToStore(const ValidPathInfo & info, const ref<std::str
     /* Compress the NAR. */
     narInfo->compression = compression;
     auto now1 = std::chrono::steady_clock::now();
-    auto narCompressed = compress(compression, *nar, parallelCompression);
+    auto narCompressed = compress(compression, *nar, parallelCompression, compressionLevel);
     auto now2 = std::chrono::steady_clock::now();
     narInfo->fileHash = hashString(htSHA256, *narCompressed);
     narInfo->fileSize = narCompressed->size();
@@ -165,6 +165,7 @@ void BinaryCacheStore::addToStore(const ValidPathInfo & info, const ref<std::str
         + (compression == "xz" ? ".xz" :
            compression == "bzip2" ? ".bz2" :
            compression == "br" ? ".br" :
+           compression == "zstd" ? ".zst" :
            "");
     if (repair || !fileExists(narInfo->url)) {
         stats.narWrite++;
