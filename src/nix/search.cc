@@ -35,6 +35,7 @@ struct CmdSearch : SourceExprCommand, MixJSON
 
     bool writeCache = true;
     bool useCache = true;
+    bool attrPathOnly = false;
 
     CmdSearch()
     {
@@ -50,6 +51,12 @@ struct CmdSearch : SourceExprCommand, MixJSON
             .longName("no-cache")
             .description("do not use or update the package search cache")
             .handler([&]() { writeCache = false; useCache = false; });
+
+        mkFlag()
+            .longName("attr-path")
+            .shortName('A')
+            .description("Only search for attribute paths")
+            .handler([&]() { attrPathOnly = true; });
     }
 
     std::string name() override
@@ -82,8 +89,8 @@ struct CmdSearch : SourceExprCommand, MixJSON
                 "nix search git 'frontend|gui'"
             },
             Example{
-                "To display the description of the found packages:",
-                "nix search git --verbose"
+                "Only search for attribute paths:",
+                "nix search -A git"
             }
         };
     }
@@ -146,12 +153,16 @@ struct CmdSearch : SourceExprCommand, MixJSON
                     DrvName parsed(drv.queryName());
 
                     for (auto &regex : regexes) {
+                        description = drv.queryMetaString("description");
                         std::regex_search(attrPath, attrPathMatch, regex);
+                        if (attrPathOnly) {
+                            if (!attrPathMatch.empty()) found++;
+                            continue;
+                        }
 
                         name = parsed.name;
                         std::regex_search(name, nameMatch, regex);
 
-                        description = drv.queryMetaString("description");
                         std::replace(description.begin(), description.end(), '\n', ' ');
                         std::regex_search(description, descriptionMatch, regex);
 
@@ -173,11 +184,13 @@ struct CmdSearch : SourceExprCommand, MixJSON
                             jsonElem.attr("description", description);
 
                         } else {
+                            auto display_description =
+                                description.empty() ? "\e[3mNo description\e[23m" : description;
                             results[attrPath] = fmt(
                                 "* %s (%s)\n  %s\n",
                                 wrap("\e[0;1m", hilite(attrPath, attrPathMatch, "\e[0;1m")),
                                 wrap("\e[0;2m", hilite(parsed.fullName, nameMatch, "\e[0;2m")),
-                                hilite(description, descriptionMatch, ANSI_NORMAL));
+                                hilite(display_description, descriptionMatch, ANSI_NORMAL));
                         }
                     }
 
@@ -269,11 +282,13 @@ struct CmdSearch : SourceExprCommand, MixJSON
                 throw SysError("cannot rename '%s' to '%s'", tmpFile, jsonCacheFileName);
         }
 
-        if (results.size() == 0)
-            throw Error("no results for the given search term(s)!");
+        if (!json) {
+            if (results.size() == 0)
+                throw Error("no results for the given search term(s)!");
 
-        RunPager pager;
-        for (auto el : results) std::cout << el.second << "\n";
+            RunPager pager;
+            for (auto el : results) std::cout << el.second << "\n";
+        }
 
     }
 };
