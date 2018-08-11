@@ -5,7 +5,9 @@
 
 #include <setjmp.h>
 
-#include <editline.h>
+#include <stdio.h>
+#include <readline/readline.h>
+#include <readline/history.h>
 
 #include "shared.hh"
 #include "eval.hh"
@@ -47,7 +49,7 @@ struct NixRepl
     NixRepl(const Strings & searchPath, nix::ref<Store> store);
     ~NixRepl();
     void mainLoop(const std::vector<std::string> & files);
-    StringSet completePrefix(string prefix);
+    StringSet * completePrefix(string prefix);
     bool getLine(string & input, const std::string &prompt);
     Path getDerivationPath(Value & v);
     bool processLine(string line);
@@ -124,66 +126,29 @@ NixRepl::~NixRepl()
 
 static NixRepl * curRepl; // ugly
 
-static char * completionCallback(char * s, int *match) {
-  auto possible = curRepl->completePrefix(s);
-  if (possible.size() == 1) {
-    *match = 1;
-    auto *res = strdup(possible.begin()->c_str() + strlen(s));
-    if (!res) throw Error("allocation failure");
-    return res;
-  } else if (possible.size() > 1) {
-    auto checkAllHaveSameAt = [&](size_t pos) {
-      auto &first = *possible.begin();
-      for (auto &p : possible) {
-        if (p.size() <= pos || p[pos] != first[pos])
-          return false;
-      }
-      return true;
-    };
-    size_t start = strlen(s);
-    size_t len = 0;
-    while (checkAllHaveSameAt(start + len)) ++len;
-    if (len > 0) {
-      *match = 1;
-      auto *res = strdup(std::string(*possible.begin(), start, len).c_str());
-      if (!res) throw Error("allocation failure");
-      return res;
+static char * completionFunc(const char * text, int state)
+{
+    static StringSet * matches = nullptr;
+
+    if (state == 0 || !matches) {
+        if (matches) {
+            delete matches;
+        }
+        matches = curRepl->completePrefix(text);
     }
-  }
 
-  *match = 0;
-  return nullptr;
-}
-
-static int listPossibleCallback(char *s, char ***avp) {
-  auto possible = curRepl->completePrefix(s);
-
-  if (possible.size() > (INT_MAX / sizeof(char*)))
-    throw Error("too many completions");
-
-  int ac = 0;
-  char **vp = nullptr;
-
-  auto check = [&](auto *p) {
-    if (!p) {
-      if (vp) {
-        while (--ac >= 0)
-          free(vp[ac]);
-        free(vp);
-      }
-      throw Error("allocation failure");
+    auto it = matches->begin();
+    while (state > 0 && it != matches->end()) {
+        it++;
+        state--;
     }
-    return p;
-  };
 
-  vp = check((char **)malloc(possible.size() * sizeof(char*)));
-
-  for (auto & p : possible)
-    vp[ac++] = check(strdup(p.c_str()));
-
-  *avp = vp;
-
-  return ac;
+    if (it == matches->end()) {
+        return nullptr;
+    }
+    else {
+        return strdup(it->c_str());
+    }
 }
 
 
@@ -200,14 +165,10 @@ void NixRepl::mainLoop(const std::vector<std::string> & files)
 
     // Allow nix-repl specific settings in .inputrc
     rl_readline_name = "nix-repl";
+    rl_completion_entry_function = completionFunc;
     createDirs(dirOf(historyFile));
-    el_hist_size = 1000;
     read_history(historyFile.c_str());
-    // rl_initialize();
-    // linenoiseSetCompletionCallback(completionCallback);
     curRepl = this;
-    rl_set_complete_func(completionCallback);
-    rl_set_list_possib_func(listPossibleCallback);
 
     std::string input;
 
@@ -247,15 +208,19 @@ bool NixRepl::getLine(string & input, const std::string &prompt)
     Finally doFree([&]() { free(s); });
     if (!s)
       return false;
+    // TODO: is it really necessary to return true on empty strings???
+    if (*s) {
+        add_history(s);
+    }
     input += s;
     input += '\n';
     return true;
 }
 
 
-StringSet NixRepl::completePrefix(string prefix)
+StringSet * NixRepl::completePrefix(string prefix)
 {
-    StringSet completions;
+    StringSet * completions = new StringSet;
 
     size_t start = prefix.find_last_of(" \n\r\t(){}[]");
     std::string prev, cur;
@@ -275,7 +240,7 @@ StringSet NixRepl::completePrefix(string prefix)
             auto prefix2 = std::string(cur, slash + 1);
             for (auto & entry : readDirectory(dir == "" ? "/" : dir)) {
                 if (entry.name[0] != '.' && hasPrefix(entry.name, prefix2))
-                    completions.insert(prev + dir + "/" + entry.name);
+                    completions->insert(prev + dir + "/" + entry.name);
             }
         } catch (Error &) {
         }
@@ -284,7 +249,7 @@ StringSet NixRepl::completePrefix(string prefix)
         StringSet::iterator i = varNames.lower_bound(cur);
         while (i != varNames.end()) {
             if (string(*i, 0, cur.size()) != cur) break;
-            completions.insert(prev + *i);
+            completions->insert(prev + *i);
             i++;
         }
     } else {
@@ -303,7 +268,7 @@ StringSet NixRepl::completePrefix(string prefix)
             for (auto & i : *v.attrs) {
                 string name = i.name;
                 if (string(name, 0, cur2.size()) != cur2) continue;
-                completions.insert(prev + expr + "." + name);
+                completions->insert(prev + expr + "." + name);
             }
 
         } catch (ParseError & e) {
