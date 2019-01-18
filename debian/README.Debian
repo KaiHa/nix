@@ -1,0 +1,35 @@
+nix for Debian
+--------------
+
+The access to the nix-daemon is restricted to members of the
+`nix-users` group. Therefore it is necessary to add the users that
+should be able to perform nix operations to the group `nix-users`.
+
+Setting up of the user environment is done by the systemd
+configuration files /usr/share/user-tmpfiles.d/nix-daemon.conf[1] and
+/usr/lib/environment.d/nix-daemon.conf[2]. For this to work there
+must be a user session instance of systemd running, as provided by
+the recommended package libpam-systemd.
+
+[1] http://manpages.debian.org/systemd-tmpfiles
+[2] http://manpages.debian.org/environment.d
+
+Users of other init systems must take other measures to setup the
+user environment. The packages examples file folder
+(/usr/share/doc/nix/examples) contains the shell recommended by the
+upstream nix project to be sourced via Xsession.d or /etc/profile.d.
+
+
+Bugs
+----
+
+This package creates a toplevel directory (/nix) that is not FHS
+compliant. It is necessary that the nix-store is located at
+/nix/store, since otherwise it would be impossible to use pre-build
+binaries from the standard Nixpkgs channels [3].
+
+
+[3] https://nixos.org/nix/manual/#sec-building-source
+
+
+ -- Thomas Koch <thomas@koch.ro>, Fri, 18 Jan 2019 07:51:30 +0100
