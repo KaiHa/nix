@@ -1,3 +1,10 @@
+nix (2.2.1-2) unstable; urgency=medium
+
+  * add note about FHS violation to package description
+  * fix missing plus after LGPL-2.1 in d/copyright
+
+ -- Thomas Koch <thomas@koch.ro>  Sat, 19 Jan 2019 19:26:06 +0000
+
 nix (2.2.1-1) unstable; urgency=medium
 
   * Initial release (Closes: #877019)
