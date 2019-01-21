@@ -51,5 +51,5 @@ Description: Purely functional package manager
  NOTE: This package installs files to a non FHS-compliant top-level
  folder /nix. This has been discussed at
  https://lists.debian.org/debian-devel/2019/01/msg00010.html
- also check the comment in this packages lintian override file
+ also check the comment in the lintian override file
  /usr/share/lintian/overrides/nix
