@@ -37,6 +37,7 @@ Depends: bzip2,
          curl,
          libdbd-sqlite3-perl,
          libwww-curl-perl,
+         lsb-base (>= 3.0-6),
          perl,
          xz-utils,
          ${shlibs:Depends}, ${misc:Depends}, ${perl:Depends}
