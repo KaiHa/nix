@@ -1,3 +1,0 @@
-nix/var/nix/daemon-socket
-nix/var/nix/gcroots/per-user
-nix/var/nix/profiles/per-user

@@ -48,8 +48,8 @@ Description: Purely functional package manager
  versions of a package, multi-user package management and easy setup
  of build environments.
  .
- NOTE: This package installs files to a non FHS-compliant top-level
- folder /nix. This has been discussed at
- https://lists.debian.org/debian-devel/2019/01/msg00010.html
- also check the comment in the lintian override file
- /usr/share/lintian/overrides/nix
+ NOTE: This package creates (via tmpfiles.d) a top-level folder /nix.
+ This is not compliant with the file hierarchy standard but has been
+ discussed and approved at
+ https://lists.debian.org/debian-devel/2019/01/msg00010.html. Also
+ check /usr/share/doc/nix/README.Debian.
