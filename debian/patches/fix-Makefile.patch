@@ -1,0 +1,17 @@
+Subject: Append CPPFLAGS to GLOBAL_*FLAGS, copy LDFLAGS into GLOBAL_LDFLAGS
+Author: Kai Harries <kai.harries@gmail.com>
+
+I (thk@) am not sure what this patch is needed for. I guess so that Debian
+specific build options are respected?
+
+--- a/Makefile
++++ b/Makefile
+@@ -19,4 +19,8 @@ GLOBAL_CXXFLAGS += -g -Wall -include config.h
+ 
+ -include Makefile.config
+ 
++GLOBAL_CFLAGS   += $(CPPFLAGS)
++GLOBAL_CXXFLAGS += $(CPPFLAGS)
++GLOBAL_LDFLAGS  += $(LDFLAGS)
++
+ include mk/lib.mk
