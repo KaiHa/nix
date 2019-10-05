@@ -1,3 +1,10 @@
+nix (2.3-1) UNRELEASED; urgency=medium
+
+  * new upstream version
+  * update debian-standards-version (4.3.0->4.4.1.0) no changes needed
+
+ -- Thomas Koch <thomas@koch.ro>  Sat, 05 Oct 2019 11:58:24 +0000
+
 nix (2.2.1-3) unstable; urgency=medium
 
   * fix lintian: init.d-script-needs-depends-on-lsb-base
