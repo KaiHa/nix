@@ -153,9 +153,9 @@ struct CmdRun : InstallablesCommand
 
         stopProgressBar();
 
-        restoreAffinity();
         restoreSignals();
-        restoreMountNamespace();
+
+        restoreAffinity();
 
         /* If this is a diverted store (i.e. its "logical" location
            (typically /nix/store) differs from its "physical" location
@@ -199,7 +199,10 @@ void chrootHelper(int argc, char * * argv)
     uid_t gid = getgid();
 
     if (unshare(CLONE_NEWUSER | CLONE_NEWNS) == -1)
-        throw SysError("setting up a private mount namespace");
+        /* Try with just CLONE_NEWNS in case user namespaces are
+           specifically disabled. */
+        if (unshare(CLONE_NEWNS) == -1)
+            throw SysError("setting up a private mount namespace");
 
     /* Bind-mount realStoreDir on /nix/store. If the latter mount
        point doesn't already exists, we have to create a chroot

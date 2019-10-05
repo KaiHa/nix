@@ -125,6 +125,15 @@ void initNix()
     act.sa_handler = sigHandler;
     if (sigaction(SIGUSR1, &act, 0)) throw SysError("handling SIGUSR1");
 
+#if __APPLE__
+    /* HACK: on darwin, we need can’t use sigprocmask with SIGWINCH.
+     * Instead, add a dummy sigaction handler, and signalHandlerThread
+     * can handle the rest. */
+    struct sigaction sa;
+    sa.sa_handler = sigHandler;
+    if (sigaction(SIGWINCH, &sa, 0)) throw SysError("handling SIGWINCH");
+#endif
+
     /* Register a SIGSEGV handler to detect stack overflows. */
     detectStackOverflow();
 
@@ -174,10 +183,6 @@ LegacyArgs::LegacyArgs(const std::string & programName,
         .longName("fallback")
         .description("build from source if substitution fails")
         .set(&(bool&) settings.tryFallback, true);
-
-    mkFlag1('j', "max-jobs", "jobs", "maximum number of parallel builds", [=](std::string s) {
-        settings.set("max-jobs", s);
-    });
 
     auto intSettingAlias = [&](char shortName, const std::string & longName,
         const std::string & description, const std::string & dest) {

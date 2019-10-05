@@ -191,6 +191,13 @@ void RemoteStore::setOptions(Connection & conn)
     if (GET_PROTOCOL_MINOR(conn.daemonVersion) >= 12) {
         std::map<std::string, Config::SettingInfo> overrides;
         globalConfig.getSettings(overrides, true);
+        overrides.erase(settings.keepFailed.name);
+        overrides.erase(settings.keepGoing.name);
+        overrides.erase(settings.tryFallback.name);
+        overrides.erase(settings.maxBuildJobs.name);
+        overrides.erase(settings.maxSilentTime.name);
+        overrides.erase(settings.buildCores.name);
+        overrides.erase(settings.useSubstitutes.name);
         conn.to << overrides.size();
         for (auto & i : overrides)
             conn.to << i.first << i.second.value;
@@ -342,7 +349,7 @@ void RemoteStore::querySubstitutablePathInfos(const PathSet & paths,
 
 
 void RemoteStore::queryPathInfoUncached(const Path & path,
-    Callback<std::shared_ptr<ValidPathInfo>> callback)
+    Callback<std::shared_ptr<ValidPathInfo>> callback) noexcept
 {
     try {
         std::shared_ptr<ValidPathInfo> info;
@@ -596,7 +603,7 @@ void RemoteStore::syncWithGC()
 }
 
 
-Roots RemoteStore::findRoots()
+Roots RemoteStore::findRoots(bool censor)
 {
     auto conn(getConnection());
     conn->to << wopFindRoots;
@@ -606,7 +613,7 @@ Roots RemoteStore::findRoots()
     while (count--) {
         Path link = readString(conn->from);
         Path target = readStorePath(*this, conn->from);
-        result[link] = target;
+        result[target].emplace(link);
     }
     return result;
 }

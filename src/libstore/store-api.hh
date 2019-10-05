@@ -11,6 +11,8 @@
 #include <atomic>
 #include <limits>
 #include <map>
+#include <unordered_map>
+#include <unordered_set>
 #include <memory>
 #include <string>
 
@@ -47,7 +49,7 @@ const size_t storePathHashLen = 32; // i.e. 160 bits
 const uint32_t exportMagic = 0x4558494e;
 
 
-typedef std::map<Path, Path> Roots;
+typedef std::unordered_map<Path, std::unordered_set<std::string>> Roots;
 
 
 struct GCOptions
@@ -349,7 +351,8 @@ public:
        (i.e. you'll get /nix/store/<hash> rather than
        /nix/store/<hash>-<name>). Use queryPathInfo() to obtain the
        full store path. */
-    virtual PathSet queryAllValidPaths() = 0;
+    virtual PathSet queryAllValidPaths()
+    { unsupported("queryAllValidPaths"); }
 
     /* Query information about a valid path. It is permitted to omit
        the name part of the store path. */
@@ -357,19 +360,19 @@ public:
 
     /* Asynchronous version of queryPathInfo(). */
     void queryPathInfo(const Path & path,
-        Callback<ref<ValidPathInfo>> callback);
+        Callback<ref<ValidPathInfo>> callback) noexcept;
 
 protected:
 
     virtual void queryPathInfoUncached(const Path & path,
-        Callback<std::shared_ptr<ValidPathInfo>> callback) = 0;
+        Callback<std::shared_ptr<ValidPathInfo>> callback) noexcept = 0;
 
 public:
 
     /* Queries the set of incoming FS references for a store path.
        The result is not cleared. */
-    virtual void queryReferrers(const Path & path,
-        PathSet & referrers) = 0;
+    virtual void queryReferrers(const Path & path, PathSet & referrers)
+    { unsupported("queryReferrers"); }
 
     /* Return all currently valid derivations that have `path' as an
        output.  (Note that the result of `queryDeriver()' is the
@@ -378,10 +381,12 @@ public:
     virtual PathSet queryValidDerivers(const Path & path) { return {}; };
 
     /* Query the outputs of the derivation denoted by `path'. */
-    virtual PathSet queryDerivationOutputs(const Path & path) = 0;
+    virtual PathSet queryDerivationOutputs(const Path & path)
+    { unsupported("queryDerivationOutputs"); }
 
     /* Query the output names of the derivation denoted by `path'. */
-    virtual StringSet queryDerivationOutputNames(const Path & path) = 0;
+    virtual StringSet queryDerivationOutputNames(const Path & path)
+    { unsupported("queryDerivationOutputNames"); }
 
     /* Query the full store path given the hash part of a valid store
        path, or "" if the path doesn't exist. */
@@ -447,14 +452,16 @@ public:
 
     /* Add a store path as a temporary root of the garbage collector.
        The root disappears as soon as we exit. */
-    virtual void addTempRoot(const Path & path) = 0;
+    virtual void addTempRoot(const Path & path)
+    { unsupported("addTempRoot"); }
 
     /* Add an indirect root, which is merely a symlink to `path' from
        /nix/var/nix/gcroots/auto/<hash of `path'>.  `path' is supposed
        to be a symlink to a store path.  The garbage collector will
        automatically remove the indirect root when it finds that
        `path' has disappeared. */
-    virtual void addIndirectRoot(const Path & path) = 0;
+    virtual void addIndirectRoot(const Path & path)
+    { unsupported("addIndirectRoot"); }
 
     /* Acquire the global GC lock, then immediately release it.  This
        function must be called after registering a new permanent root,
@@ -478,11 +485,15 @@ public:
 
     /* Find the roots of the garbage collector.  Each root is a pair
        (link, storepath) where `link' is the path of the symlink
-       outside of the Nix store that point to `storePath'.  */
-    virtual Roots findRoots() = 0;
+       outside of the Nix store that point to `storePath'. If
+       'censor' is true, privacy-sensitive information about roots
+       found in /proc is censored. */
+    virtual Roots findRoots(bool censor)
+    { unsupported("findRoots"); }
 
     /* Perform a garbage collection. */
-    virtual void collectGarbage(const GCOptions & options, GCResults & results) = 0;
+    virtual void collectGarbage(const GCOptions & options, GCResults & results)
+    { unsupported("collectGarbage"); }
 
     /* Return a string representing information about the path that
        can be loaded into the database using `nix-store --load-db' or
@@ -513,11 +524,13 @@ public:
     virtual bool verifyStore(bool checkContents, RepairFlag repair = NoRepair) { return false; };
 
     /* Return an object to access files in the Nix store. */
-    virtual ref<FSAccessor> getFSAccessor() = 0;
+    virtual ref<FSAccessor> getFSAccessor()
+    { unsupported("getFSAccessor"); }
 
     /* Add signatures to the specified store path. The signatures are
        not verified. */
-    virtual void addSignatures(const Path & storePath, const StringSet & sigs) = 0;
+    virtual void addSignatures(const Path & storePath, const StringSet & sigs)
+    { unsupported("addSignatures"); }
 
     /* Utility functions. */
 
@@ -620,9 +633,9 @@ protected:
     Stats stats;
 
     /* Unsupported methods. */
-    [[noreturn]] void unsupported()
+    [[noreturn]] void unsupported(const std::string & op)
     {
-        throw Unsupported("requested operation is not supported by store '%s'", getUri());
+        throw Unsupported("operation '%s' is not supported by store '%s'", op, getUri());
     }
 
 };
@@ -753,8 +766,7 @@ StoreType getStoreType(const std::string & uri = settings.storeUri.get(),
     const std::string & stateDir = settings.nixStateDir);
 
 /* Return the default substituter stores, defined by the
-   ‘substituters’ option and various legacy options like
-   ‘binary-caches’. */
+   ‘substituters’ option and various legacy options. */
 std::list<ref<Store>> getDefaultSubstituters();
 
 
@@ -788,5 +800,9 @@ ValidPathInfo decodeValidPathInfo(std::istream & str,
 /* Compute the content-addressability assertion (ValidPathInfo::ca)
    for paths created by makeFixedOutputPath() / addToStore(). */
 std::string makeFixedOutputCA(bool recursive, const Hash & hash);
+
+
+/* Split URI into protocol+hierarchy part and its parameter set. */
+std::pair<std::string, Store::Params> splitUriAndParams(const std::string & uri);
 
 }

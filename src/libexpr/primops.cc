@@ -315,6 +315,12 @@ static void prim_isBool(EvalState & state, const Pos & pos, Value * * args, Valu
     mkBool(v, args[0]->type == tBool);
 }
 
+/* Determine whether the argument is a path. */
+static void prim_isPath(EvalState & state, const Pos & pos, Value * * args, Value & v)
+{
+    state.forceValue(*args[0]);
+    mkBool(v, args[0]->type == tPath);
+}
 
 struct CompareValues
 {
@@ -555,7 +561,7 @@ static void prim_derivationStrict(EvalState & state, const Pos & pos, Value * * 
 
     PathSet context;
 
-    std::experimental::optional<std::string> outputHash;
+    std::optional<std::string> outputHash;
     std::string outputHashAlgo;
     bool outputHashRecursive = false;
 
@@ -687,20 +693,11 @@ static void prim_derivationStrict(EvalState & state, const Pos & pos, Value * * 
             }
         }
 
-        /* See prim_unsafeDiscardOutputDependency. */
-        else if (path.at(0) == '~')
-            drv.inputSrcs.insert(string(path, 1));
-
         /* Handle derivation outputs of the form ‘!<name>!<path>’. */
         else if (path.at(0) == '!') {
             std::pair<string, string> ctx = decodeContext(path);
             drv.inputDrvs[ctx.first].insert(ctx.second);
         }
-
-        /* Handle derivation contexts returned by
-           ‘builtins.storePath’. */
-        else if (isDerivation(path))
-            drv.inputDrvs[path] = state.store->queryDerivationOutputNames(path);
 
         /* Otherwise it's a source file. */
         else
@@ -835,8 +832,14 @@ static void prim_pathExists(EvalState & state, const Pos & pos, Value * * args, 
 {
     PathSet context;
     Path path = state.coerceToPath(pos, *args[0], context);
-    if (!context.empty())
-        throw EvalError(format("string '%1%' cannot refer to other paths, at %2%") % path % pos);
+    try {
+        state.realiseContext(context);
+    } catch (InvalidPathError & e) {
+        throw EvalError(format(
+                "cannot check the existence of '%1%', since path '%2%' is not valid, at %3%")
+            % path % e.path % pos);
+    }
+
     try {
         mkBool(v, pathExists(state.checkSourcePath(path)));
     } catch (SysError & e) {
@@ -926,6 +929,20 @@ static void prim_findFile(EvalState & state, const Pos & pos, Value * * args, Va
     mkPath(v, state.checkSourcePath(state.findFile(searchPath, path, pos)).c_str());
 }
 
+/* Return the cryptographic hash of a file in base-16. */
+static void prim_hashFile(EvalState & state, const Pos & pos, Value * * args, Value & v)
+{
+    string type = state.forceStringNoCtx(*args[0], pos);
+    HashType ht = parseHashType(type);
+    if (ht == htUnknown)
+      throw Error(format("unknown hash type '%1%', at %2%") % type % pos);
+
+    PathSet context; // discarded
+    Path p = state.coerceToPath(pos, *args[1], context);
+
+    mkString(v, hashFile(ht, state.checkSourcePath(p)).to_string(Base16, false), context);
+}
+
 /* Read a directory (without . or ..) */
 static void prim_readDir(EvalState & state, const Pos & pos, Value * * args, Value & v)
 {
@@ -1004,13 +1021,8 @@ static void prim_toFile(EvalState & state, const Pos & pos, Value * * args, Valu
     PathSet refs;
 
     for (auto path : context) {
-        if (path.at(0) == '=') path = string(path, 1);
-        if (isDerivation(path)) {
-            /* See prim_unsafeDiscardOutputDependency. */
-            if (path.at(0) != '~')
-                throw EvalError(format("in 'toFile': the file '%1%' cannot refer to derivation outputs, at %2%") % name % pos);
-            path = string(path, 1);
-        }
+        if (path.at(0) != '/')
+            throw EvalError(format("in 'toFile': the file '%1%' cannot refer to derivation outputs, at %2%") % name % pos);
         refs.insert(path);
     }
 
@@ -1794,41 +1806,6 @@ static void prim_stringLength(EvalState & state, const Pos & pos, Value * * args
 }
 
 
-static void prim_unsafeDiscardStringContext(EvalState & state, const Pos & pos, Value * * args, Value & v)
-{
-    PathSet context;
-    string s = state.coerceToString(pos, *args[0], context);
-    mkString(v, s, PathSet());
-}
-
-
-static void prim_hasContext(EvalState & state, const Pos & pos, Value * * args, Value & v)
-{
-    PathSet context;
-    state.forceString(*args[0], context, pos);
-    mkBool(v, !context.empty());
-}
-
-
-/* Sometimes we want to pass a derivation path (i.e. pkg.drvPath) to a
-   builder without causing the derivation to be built (for instance,
-   in the derivation that builds NARs in nix-push, when doing
-   source-only deployment).  This primop marks the string context so
-   that builtins.derivation adds the path to drv.inputSrcs rather than
-   drv.inputDrvs. */
-static void prim_unsafeDiscardOutputDependency(EvalState & state, const Pos & pos, Value * * args, Value & v)
-{
-    PathSet context;
-    string s = state.coerceToString(pos, *args[0], context);
-
-    PathSet context2;
-    for (auto & p : context)
-        context2.insert(p.at(0) == '=' ? "~" + string(p, 1) : p);
-
-    mkString(v, s, context2);
-}
-
-
 /* Return the cryptographic hash of a string in base-16. */
 static void prim_hashString(EvalState & state, const Pos & pos, Value * * args, Value & v)
 {
@@ -2079,9 +2056,9 @@ static void prim_splitVersion(EvalState & state, const Pos & pos, Value * * args
 void fetch(EvalState & state, const Pos & pos, Value * * args, Value & v,
     const string & who, bool unpack, const std::string & defaultName)
 {
-    string url;
-    Hash expectedHash;
-    string name = defaultName;
+    CachedDownloadRequest request("");
+    request.unpack = unpack;
+    request.name = defaultName;
 
     state.forceValue(*args[0]);
 
@@ -2092,27 +2069,27 @@ void fetch(EvalState & state, const Pos & pos, Value * * args, Value & v,
         for (auto & attr : *args[0]->attrs) {
             string n(attr.name);
             if (n == "url")
-                url = state.forceStringNoCtx(*attr.value, *attr.pos);
+                request.uri = state.forceStringNoCtx(*attr.value, *attr.pos);
             else if (n == "sha256")
-                expectedHash = Hash(state.forceStringNoCtx(*attr.value, *attr.pos), htSHA256);
+                request.expectedHash = Hash(state.forceStringNoCtx(*attr.value, *attr.pos), htSHA256);
             else if (n == "name")
-                name = state.forceStringNoCtx(*attr.value, *attr.pos);
+                request.name = state.forceStringNoCtx(*attr.value, *attr.pos);
             else
                 throw EvalError(format("unsupported argument '%1%' to '%2%', at %3%") % attr.name % who % attr.pos);
         }
 
-        if (url.empty())
+        if (request.uri.empty())
             throw EvalError(format("'url' argument required, at %1%") % pos);
 
     } else
-        url = state.forceStringNoCtx(*args[0], pos);
+        request.uri = state.forceStringNoCtx(*args[0], pos);
 
-    state.checkURI(url);
+    state.checkURI(request.uri);
 
-    if (evalSettings.pureEval && !expectedHash)
+    if (evalSettings.pureEval && !request.expectedHash)
         throw Error("in pure evaluation mode, '%s' requires a 'sha256' argument", who);
 
-    Path res = getDownloader()->downloadCached(state.store, url, unpack, name, expectedHash);
+    Path res = getDownloader()->downloadCached(state.store, request).path;
 
     if (state.allowedPaths)
         state.allowedPaths->insert(res);
@@ -2218,6 +2195,7 @@ void EvalState::createBaseEnv()
     addPrimOp("__isInt", 1, prim_isInt);
     addPrimOp("__isFloat", 1, prim_isFloat);
     addPrimOp("__isBool", 1, prim_isBool);
+    addPrimOp("__isPath", 1, prim_isPath);
     addPrimOp("__genericClosure", 1, prim_genericClosure);
     addPrimOp("abort", 1, prim_abort);
     addPrimOp("__addErrorContext", 2, prim_addErrorContext);
@@ -2244,6 +2222,7 @@ void EvalState::createBaseEnv()
     addPrimOp("__readFile", 1, prim_readFile);
     addPrimOp("__readDir", 1, prim_readDir);
     addPrimOp("__findFile", 2, prim_findFile);
+    addPrimOp("__hashFile", 2, prim_hashFile);
 
     // Creating files
     addPrimOp("__toXML", 1, prim_toXML);
@@ -2299,9 +2278,6 @@ void EvalState::createBaseEnv()
     addPrimOp("toString", 1, prim_toString);
     addPrimOp("__substring", 3, prim_substring);
     addPrimOp("__stringLength", 1, prim_stringLength);
-    addPrimOp("__hasContext", 1, prim_hasContext);
-    addPrimOp("__unsafeDiscardStringContext", 1, prim_unsafeDiscardStringContext);
-    addPrimOp("__unsafeDiscardOutputDependency", 1, prim_unsafeDiscardOutputDependency);
     addPrimOp("__hashString", 2, prim_hashString);
     addPrimOp("__match", 2, prim_match);
     addPrimOp("__split", 2, prim_split);

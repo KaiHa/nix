@@ -41,7 +41,7 @@ public:
     PathSet queryAllValidPaths() override;
 
     void queryPathInfoUncached(const Path & path,
-        Callback<std::shared_ptr<ValidPathInfo>> callback) override;
+        Callback<std::shared_ptr<ValidPathInfo>> callback) noexcept override;
 
     void queryReferrers(const Path & path, PathSet & referrers) override;
 
@@ -82,7 +82,7 @@ public:
 
     void syncWithGC() override;
 
-    Roots findRoots() override;
+    Roots findRoots(bool censor) override;
 
     void collectGarbage(const GCOptions & options, GCResults & results) override;
 
@@ -149,7 +149,7 @@ public:
 private:
 
     ref<RemoteStore::Connection> openConnection() override;
-    std::experimental::optional<std::string> path;
+    std::optional<std::string> path;
 };
 
 

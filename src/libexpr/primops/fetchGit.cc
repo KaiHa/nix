@@ -26,7 +26,7 @@ struct GitInfo
 std::regex revRegex("^[0-9a-fA-F]{40}$");
 
 GitInfo exportGit(ref<Store> store, const std::string & uri,
-    std::experimental::optional<std::string> ref, std::string rev,
+    std::optional<std::string> ref, std::string rev,
     const std::string & name)
 {
     if (evalSettings.pureEval && rev == "")
@@ -94,7 +94,11 @@ GitInfo exportGit(ref<Store> store, const std::string & uri,
         runProgram("git", true, { "init", "--bare", cacheDir });
     }
 
-    Path localRefFile = cacheDir + "/refs/heads/" + *ref;
+    Path localRefFile;
+    if (ref->compare(0, 5, "refs/") == 0)
+        localRefFile = cacheDir + "/" + *ref;
+    else
+        localRefFile = cacheDir + "/refs/heads/" + *ref;
 
     bool doFetch;
     time_t now = time(0);
@@ -116,7 +120,7 @@ GitInfo exportGit(ref<Store> store, const std::string & uri,
            git fetch to update the local ref to the remote ref. */
         struct stat st;
         doFetch = stat(localRefFile.c_str(), &st) != 0 ||
-            st.st_mtime + settings.tarballTtl <= now;
+            (uint64_t) st.st_mtime + settings.tarballTtl <= (uint64_t) now;
     }
     if (doFetch)
     {
@@ -190,7 +194,7 @@ GitInfo exportGit(ref<Store> store, const std::string & uri,
 static void prim_fetchGit(EvalState & state, const Pos & pos, Value * * args, Value & v)
 {
     std::string url;
-    std::experimental::optional<std::string> ref;
+    std::optional<std::string> ref;
     std::string rev;
     std::string name = "source";
     PathSet context;
@@ -235,7 +239,7 @@ static void prim_fetchGit(EvalState & state, const Pos & pos, Value * * args, Va
     v.attrs->sort();
 
     if (state.allowedPaths)
-        state.allowedPaths->insert(gitInfo.storePath);
+        state.allowedPaths->insert(state.store->toRealPath(gitInfo.storePath));
 }
 
 static RegisterPrimOp r("fetchGit", 1, prim_fetchGit);

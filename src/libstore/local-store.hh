@@ -127,7 +127,7 @@ public:
     PathSet queryAllValidPaths() override;
 
     void queryPathInfoUncached(const Path & path,
-        Callback<std::shared_ptr<ValidPathInfo>> callback) override;
+        Callback<std::shared_ptr<ValidPathInfo>> callback) noexcept override;
 
     void queryReferrers(const Path & path, PathSet & referrers) override;
 
@@ -180,11 +180,11 @@ private:
     typedef std::shared_ptr<AutoCloseFD> FDPtr;
     typedef list<FDPtr> FDs;
 
-    std::set<std::pair<pid_t, Path>> readTempRoots(FDs & fds);
+    void findTempRoots(FDs & fds, Roots & roots, bool censor);
 
 public:
 
-    Roots findRoots() override;
+    Roots findRoots(bool censor) override;
 
     void collectGarbage(const GCOptions & options, GCResults & results) override;
 
@@ -263,13 +263,13 @@ private:
     bool isActiveTempFile(const GCState & state,
         const Path & path, const string & suffix);
 
-    int openGCLock(LockType lockType);
+    AutoCloseFD openGCLock(LockType lockType);
 
     void findRoots(const Path & path, unsigned char type, Roots & roots);
 
-    Roots findRootsNoTemp();
+    void findRootsNoTemp(Roots & roots, bool censor);
 
-    PathSet findRuntimeRoots();
+    void findRuntimeRoots(Roots & roots, bool censor);
 
     void removeUnusedLinks(const GCState & state);
 

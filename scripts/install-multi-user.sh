@@ -240,10 +240,16 @@ EOF
 }
 trap finish_fail EXIT
 
+channel_update_failed=0
 function finish_success {
     finish_cleanup
 
     ok "Alright! We're done!"
+    if [ "x$channel_update_failed" = x1 ]; then
+        echo ""
+        echo "But fetching the nixpkgs channel failed. (Are you offline?)"
+        echo "To try again later, run \"sudo -i nix-channel --update nixpkgs\"."
+    fi
     cat <<EOF
 
 Before Nix will work in your existing shells, you'll need to close
@@ -324,7 +330,7 @@ EOF
         fi
     done
 
-    if [ -d /nix ]; then
+    if [ -d /nix/store ] || [ -d /nix/var ]; then
         failure <<EOF
 There are some relics of a previous installation of Nix at /nix, and
 this scripts assumes Nix is _not_ yet installed. Please delete the old
@@ -674,9 +680,6 @@ $NIX_INSTALLED_NIX.
 EOF
         fi
 
-        _sudo "to initialize the Nix Database" \
-              $NIX_INSTALLED_NIX/bin/nix-store --init
-
         cat ./.reginfo \
             | _sudo "to load data for the first time in to the Nix Database" \
                    "$NIX_INSTALLED_NIX/bin/nix-store" --load-db
@@ -737,17 +740,15 @@ setup_default_profile() {
     # otherwise it will be lost in environments where sudo doesn't pass
     # all the environment variables by default.
     _sudo "to update the default channel in the default profile" \
-          HOME="$ROOT_HOME" NIX_SSL_CERT_FILE="$NIX_SSL_CERT_FILE" "$NIX_INSTALLED_NIX/bin/nix-channel" --update nixpkgs
+          HOME="$ROOT_HOME" NIX_SSL_CERT_FILE="$NIX_SSL_CERT_FILE" "$NIX_INSTALLED_NIX/bin/nix-channel" --update nixpkgs \
+          || channel_update_failed=1
+
 }
 
 
 place_nix_configuration() {
     cat <<EOF > "$SCRATCH/nix.conf"
 build-users-group = $NIX_BUILD_GROUP_NAME
-
-max-jobs = $NIX_USER_COUNT
-cores = 1
-sandbox = false
 EOF
     _sudo "to place the default nix daemon configuration (part 2)" \
           install -m 0664 "$SCRATCH/nix.conf" /etc/nix/nix.conf
@@ -757,9 +758,13 @@ main() {
     if [ "$(uname -s)" = "Darwin" ]; then
         # shellcheck source=./install-darwin-multi-user.sh
         . "$EXTRACTED_NIX_PATH/install-darwin-multi-user.sh"
-    elif [ "$(uname -s)" = "Linux" ] && [ -e /run/systemd/system ]; then
-        # shellcheck source=./install-systemd-multi-user.sh
-        . "$EXTRACTED_NIX_PATH/install-systemd-multi-user.sh"
+    elif [ "$(uname -s)" = "Linux" ]; then
+        if [ -e /run/systemd/system ]; then
+            # shellcheck source=./install-systemd-multi-user.sh
+            . "$EXTRACTED_NIX_PATH/install-systemd-multi-user.sh"
+        else
+            failure "Sorry, the multi-user installation requires systemd on Linux (detected using /run/systemd/system)"
+        fi
     else
         failure "Sorry, I don't know what to do on $(uname)"
     fi

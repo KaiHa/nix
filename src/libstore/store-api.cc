@@ -85,18 +85,29 @@ string storePathToHash(const Path & path)
 void checkStoreName(const string & name)
 {
     string validChars = "+-._?=";
+
+    auto baseError = format("The path name '%2%' is invalid: %3%. "
+        "Path names are alphanumeric and can include the symbols %1% "
+        "and must not begin with a period. "
+        "Note: If '%2%' is a source file and you cannot rename it on "
+        "disk, builtins.path { name = ... } can be used to give it an "
+        "alternative name.") % validChars % name;
+
     /* Disallow names starting with a dot for possible security
        reasons (e.g., "." and ".."). */
     if (string(name, 0, 1) == ".")
-        throw Error(format("illegal name: '%1%'") % name);
+        throw Error(baseError % "it is illegal to start the name with a period");
+    /* Disallow names longer than 211 characters. ext4’s max is 256,
+       but we need extra space for the hash and .chroot extensions. */
+    if (name.length() > 211)
+        throw Error(baseError % "name must be less than 212 characters");
     for (auto & i : name)
         if (!((i >= 'A' && i <= 'Z') ||
               (i >= 'a' && i <= 'z') ||
               (i >= '0' && i <= '9') ||
               validChars.find(i) != string::npos))
         {
-            throw Error(format("invalid character '%1%' in name '%2%'")
-                % i % name);
+            throw Error(baseError % (format("the '%1%' character is invalid") % i));
         }
 }
 
@@ -318,13 +329,14 @@ ref<const ValidPathInfo> Store::queryPathInfo(const Path & storePath)
 
 
 void Store::queryPathInfo(const Path & storePath,
-    Callback<ref<ValidPathInfo>> callback)
+    Callback<ref<ValidPathInfo>> callback) noexcept
 {
-    assertStorePath(storePath);
-
-    auto hashPart = storePathToHash(storePath);
+    std::string hashPart;
 
     try {
+        assertStorePath(storePath);
+
+        hashPart = storePathToHash(storePath);
 
         {
             auto res = state.lock()->pathInfoCache.get(hashPart);
@@ -354,8 +366,10 @@ void Store::queryPathInfo(const Path & storePath,
 
     } catch (...) { return callback.rethrow(); }
 
+    auto callbackPtr = std::make_shared<decltype(callback)>(std::move(callback));
+
     queryPathInfoUncached(storePath,
-        {[this, storePath, hashPart, callback](std::future<std::shared_ptr<ValidPathInfo>> fut) {
+        {[this, storePath, hashPart, callbackPtr](std::future<std::shared_ptr<ValidPathInfo>> fut) {
 
             try {
                 auto info = fut.get();
@@ -375,8 +389,8 @@ void Store::queryPathInfo(const Path & storePath,
                     throw InvalidPath("path '%s' is not valid", storePath);
                 }
 
-                callback(ref<ValidPathInfo>(info));
-            } catch (...) { callback.rethrow(); }
+                (*callbackPtr)(ref<ValidPathInfo>(info));
+            } catch (...) { callbackPtr->rethrow(); }
         }});
 }
 
@@ -562,10 +576,10 @@ void Store::buildPaths(const PathSet & paths, BuildMode buildMode)
 {
     for (auto & path : paths)
         if (isDerivation(path))
-            unsupported();
+            unsupported("buildPaths");
 
     if (queryValidPaths(paths).size() != paths.size())
-        unsupported();
+        unsupported("buildPaths");
 }
 
 
@@ -842,12 +856,11 @@ namespace nix {
 
 RegisterStoreImplementation::Implementations * RegisterStoreImplementation::implementations = 0;
 
-
-ref<Store> openStore(const std::string & uri_,
-    const Store::Params & extraParams)
+/* Split URI into protocol+hierarchy part and its parameter set. */
+std::pair<std::string, Store::Params> splitUriAndParams(const std::string & uri_)
 {
     auto uri(uri_);
-    Store::Params params(extraParams);
+    Store::Params params;
     auto q = uri.find('?');
     if (q != std::string::npos) {
         for (auto s : tokenizeString<Strings>(uri.substr(q + 1), "&")) {
@@ -873,6 +886,15 @@ ref<Store> openStore(const std::string & uri_,
         }
         uri = uri_.substr(0, q);
     }
+    return {uri, params};
+}
+
+ref<Store> openStore(const std::string & uri_,
+    const Store::Params & extraParams)
+{
+    auto [uri, uriParams] = splitUriAndParams(uri_);
+    auto params = extraParams;
+    params.insert(uriParams.begin(), uriParams.end());
 
     for (auto fun : *RegisterStoreImplementation::implementations) {
         auto store = fun(uri, params);

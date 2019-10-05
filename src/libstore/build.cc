@@ -12,6 +12,7 @@
 #include "json.hh"
 #include "nar-info.hh"
 #include "parsed-derivations.hh"
+#include "machines.hh"
 
 #include <algorithm>
 #include <iostream>
@@ -37,6 +38,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <cstring>
+#include <termios.h>
 
 #include <pwd.h>
 #include <grp.h>
@@ -264,6 +266,12 @@ public:
     /* Set if at least one derivation had a timeout. */
     bool timedOut;
 
+    /* Set if at least one derivation fails with a hash mismatch. */
+    bool hashMismatch;
+
+    /* Set if at least one derivation is not deterministic in check mode. */
+    bool checkMismatch;
+
     LocalStore & store;
 
     std::unique_ptr<HookInstance> hook;
@@ -460,6 +468,28 @@ static void commonChildInit(Pipe & logPipe)
     close(fdDevNull);
 }
 
+void handleDiffHook(uid_t uid, uid_t gid, Path tryA, Path tryB, Path drvPath, Path tmpDir)
+{
+    auto diffHook = settings.diffHook;
+    if (diffHook != "" && settings.runDiffHook) {
+        try {
+            RunOptions diffHookOptions(diffHook,{tryA, tryB, drvPath, tmpDir});
+            diffHookOptions.searchPath = true;
+            diffHookOptions.uid = uid;
+            diffHookOptions.gid = gid;
+            diffHookOptions.chdir = "/";
+
+            auto diffRes = runProgram(diffHookOptions);
+            if (!statusOk(diffRes.first))
+                throw ExecError(diffRes.first, fmt("diff-hook program '%1%' %2%", diffHook, statusToString(diffRes.first)));
+
+            if (diffRes.second != "")
+                printError(chomp(diffRes.second));
+        } catch (Error & error) {
+            printError("diff hook execution failed: %s", error.what());
+        }
+    }
+}
 
 //////////////////////////////////////////////////////////////////////
 
@@ -881,6 +911,9 @@ public:
         Worker & worker, BuildMode buildMode = bmNormal);
     ~DerivationGoal();
 
+    /* Whether we need to perform hash rewriting if there are valid output paths. */
+    bool needsHashRewrite();
+
     void timedOut() override;
 
     string key() override
@@ -1033,6 +1066,17 @@ DerivationGoal::~DerivationGoal()
 }
 
 
+inline bool DerivationGoal::needsHashRewrite()
+{
+#if __linux__
+    return !useChroot;
+#else
+    /* Darwin requires hash rewriting even when sandboxing is enabled. */
+    return true;
+#endif
+}
+
+
 void DerivationGoal::killChild()
 {
     if (pid != -1) {
@@ -1153,7 +1197,7 @@ void DerivationGoal::haveDerivation()
     /* We are first going to try to create the invalid output paths
        through substitutes.  If that doesn't work, we'll build
        them. */
-    if (settings.useSubstitutes && drv->substitutesAllowed())
+    if (settings.useSubstitutes && parsedDrv->substitutesAllowed())
         for (auto & i : invalidOutputs)
             addWaitee(worker.makeSubstitutionGoal(i, buildMode == bmRepair ? Repair : NoRepair));
 
@@ -1521,8 +1565,8 @@ void DerivationGoal::buildDone()
     if (hook) {
         hook->builderOut.readSide = -1;
         hook->fromHook.readSide = -1;
-    }
-    else builderOut.readSide = -1;
+    } else
+        builderOut.readSide = -1;
 
     /* Close the log file. */
     closeLogFile();
@@ -1584,6 +1628,61 @@ void DerivationGoal::buildDone()
         /* Compute the FS closure of the outputs and register them as
            being valid. */
         registerOutputs();
+
+        if (settings.postBuildHook != "") {
+            Activity act(*logger, lvlInfo, actPostBuildHook,
+                fmt("running post-build-hook '%s'", settings.postBuildHook),
+                Logger::Fields{drvPath});
+            PushActivity pact(act.id);
+            auto outputPaths = drv->outputPaths();
+            std::map<std::string, std::string> hookEnvironment = getEnv();
+
+            hookEnvironment.emplace("DRV_PATH", drvPath);
+            hookEnvironment.emplace("OUT_PATHS", chomp(concatStringsSep(" ", outputPaths)));
+
+            RunOptions opts(settings.postBuildHook, {});
+            opts.environment = hookEnvironment;
+
+            struct LogSink : Sink {
+                Activity & act;
+                std::string currentLine;
+
+                LogSink(Activity & act) : act(act) { }
+
+                void operator() (const unsigned char * data, size_t len) override {
+                    for (size_t i = 0; i < len; i++) {
+                        auto c = data[i];
+
+                        if (c == '\n') {
+                            flushLine();
+                        } else {
+                            currentLine += c;
+                        }
+                    }
+                }
+
+                void flushLine() {
+                    if (settings.verboseBuild) {
+                        printError("post-build-hook: " + currentLine);
+                    } else {
+                        act.result(resPostBuildLogLine, currentLine);
+                    }
+                    currentLine.clear();
+                }
+
+                ~LogSink() {
+                    if (currentLine != "") {
+                        currentLine += '\n';
+                        flushLine();
+                    }
+                }
+            };
+            LogSink sink(act);
+
+            opts.standardOut = &sink;
+            opts.mergeStderrToStdout = true;
+            runProgram2(opts);
+        }
 
         if (buildMode == bmCheck) {
             done(BuildResult::Built);
@@ -2072,7 +2171,7 @@ void DerivationGoal::startBuilder()
 #endif
     }
 
-    else {
+    if (needsHashRewrite()) {
 
         if (pathExists(homeDir))
             throw Error(format("directory '%1%' exists; please remove it") % homeDir);
@@ -2144,7 +2243,48 @@ void DerivationGoal::startBuilder()
     Path logFile = openLogFile();
 
     /* Create a pipe to get the output of the builder. */
-    builderOut.create();
+    //builderOut.create();
+
+    builderOut.readSide = posix_openpt(O_RDWR | O_NOCTTY);
+    if (!builderOut.readSide)
+        throw SysError("opening pseudoterminal master");
+
+    std::string slaveName(ptsname(builderOut.readSide.get()));
+
+    if (buildUser) {
+        if (chmod(slaveName.c_str(), 0600))
+            throw SysError("changing mode of pseudoterminal slave");
+
+        if (chown(slaveName.c_str(), buildUser->getUID(), 0))
+            throw SysError("changing owner of pseudoterminal slave");
+    } else {
+        if (grantpt(builderOut.readSide.get()))
+            throw SysError("granting access to pseudoterminal slave");
+    }
+
+    #if 0
+    // Mount the pt in the sandbox so that the "tty" command works.
+    // FIXME: this doesn't work with the new devpts in the sandbox.
+    if (useChroot)
+        dirsInChroot[slaveName] = {slaveName, false};
+    #endif
+
+    if (unlockpt(builderOut.readSide.get()))
+        throw SysError("unlocking pseudoterminal");
+
+    builderOut.writeSide = open(slaveName.c_str(), O_RDWR | O_NOCTTY);
+    if (!builderOut.writeSide)
+        throw SysError("opening pseudoterminal slave");
+
+    // Put the pt into raw mode to prevent \n -> \r\n translation.
+    struct termios term;
+    if (tcgetattr(builderOut.writeSide.get(), &term))
+        throw SysError("getting pseudoterminal attributes");
+
+    cfmakeraw(&term);
+
+    if (tcsetattr(builderOut.writeSide.get(), TCSANOW, &term))
+        throw SysError("putting pseudoterminal into raw mode");
 
     result.startTime = time(0);
 
@@ -2193,7 +2333,6 @@ void DerivationGoal::startBuilder()
         userNamespaceSync.create();
 
         options.allowVfork = false;
-        options.restoreMountNamespace = false;
 
         Pid helper = startProcess([&]() {
 
@@ -2218,17 +2357,37 @@ void DerivationGoal::startBuilder()
                 flags |= CLONE_NEWNET;
 
             pid_t child = clone(childEntry, stack + stackSize, flags, this);
-            if (child == -1 && errno == EINVAL)
+            if (child == -1 && errno == EINVAL) {
                 /* Fallback for Linux < 2.13 where CLONE_NEWPID and
                    CLONE_PARENT are not allowed together. */
-                child = clone(childEntry, stack + stackSize, flags & ~CLONE_NEWPID, this);
+                flags &= ~CLONE_NEWPID;
+                child = clone(childEntry, stack + stackSize, flags, this);
+            }
+            if (child == -1 && (errno == EPERM || errno == EINVAL)) {
+                /* Some distros patch Linux to not allow unpriveleged
+                 * user namespaces. If we get EPERM or EINVAL, try
+                 * without CLONE_NEWUSER and see if that works.
+                 */
+                flags &= ~CLONE_NEWUSER;
+                child = clone(childEntry, stack + stackSize, flags, this);
+            }
+            /* Otherwise exit with EPERM so we can handle this in the
+               parent. This is only done when sandbox-fallback is set
+               to true (the default). */
+            if (child == -1 && (errno == EPERM || errno == EINVAL) && settings.sandboxFallback)
+                _exit(1);
             if (child == -1) throw SysError("cloning builder process");
 
             writeFull(builderOut.writeSide.get(), std::to_string(child) + "\n");
             _exit(0);
         }, options);
 
-        if (helper.wait() != 0)
+        int res = helper.wait();
+        if (res != 0 && settings.sandboxFallback) {
+            useChroot = false;
+            tmpDirInSandbox = tmpDir;
+            goto fallback;
+        } else if (res != 0)
             throw Error("unable to start build process");
 
         userNamespaceSync.readSide = -1;
@@ -2259,8 +2418,8 @@ void DerivationGoal::startBuilder()
     } else
 #endif
     {
+    fallback:
         options.allowVfork = !buildUser && !drv->isBuiltin();
-        options.restoreMountNamespace = false;
         pid = startProcess([&]() {
             runChild();
         }, options);
@@ -2371,6 +2530,9 @@ void DerivationGoal::initEnv()
        may change that in the future. So tell the builder which file
        descriptor to use for that. */
     env["NIX_LOG_FD"] = "2";
+
+    /* Trigger colored output in various tools. */
+    env["TERM"] = "xterm-256color";
 }
 
 
@@ -2415,7 +2577,7 @@ void DerivationGoal::writeStructuredAttrs()
        objects consisting entirely of those values. (So nested
        arrays or objects are not supported.) */
 
-    auto handleSimpleType = [](const nlohmann::json & value) -> std::experimental::optional<std::string> {
+    auto handleSimpleType = [](const nlohmann::json & value) -> std::optional<std::string> {
         if (value.is_string())
             return shellEscape(value);
 
@@ -2501,17 +2663,17 @@ void setupSeccomp()
         seccomp_release(ctx);
     });
 
-    if (settings.thisSystem == "x86_64-linux" &&
+    if (nativeSystem == "x86_64-linux" &&
         seccomp_arch_add(ctx, SCMP_ARCH_X86) != 0)
         throw SysError("unable to add 32-bit seccomp architecture");
 
-    if (settings.thisSystem == "x86_64-linux" &&
+    if (nativeSystem == "x86_64-linux" &&
         seccomp_arch_add(ctx, SCMP_ARCH_X32) != 0)
         throw SysError("unable to add X32 seccomp architecture");
 
-    if (settings.thisSystem == "aarch64-linux" &&
+    if (nativeSystem == "aarch64-linux" &&
         seccomp_arch_add(ctx, SCMP_ARCH_ARM) != 0)
-        printError("unsable to add ARM seccomp architecture; this may result in spurious build failures if running 32-bit ARM processes.");
+        printError("unable to add ARM seccomp architecture; this may result in spurious build failures if running 32-bit ARM processes");
 
     /* Prevent builders from creating setuid/setgid binaries. */
     for (int perm : { S_ISUID, S_ISGID }) {
@@ -2648,7 +2810,13 @@ void DerivationGoal::runChild()
                on. */
             if (fixedOutput) {
                 ss.push_back("/etc/resolv.conf");
-                ss.push_back("/etc/nsswitch.conf");
+
+                // Only use nss functions to resolve hosts and
+                // services. Don’t use it for anything else that may
+                // be configured for this system. This limits the
+                // potential impurities introduced in fixed outputs.
+                writeFile(chrootRootDir + "/etc/nsswitch.conf", "hosts: files dns\nservices: files\n");
+
                 ss.push_back("/etc/services");
                 ss.push_back("/etc/hosts");
                 if (pathExists("/var/run/nscd/socket"))
@@ -2874,6 +3042,10 @@ void DerivationGoal::runChild()
                 for (auto & i : missingPaths) {
                     sandboxProfile += (format("\t(subpath \"%1%\")\n") % i.c_str()).str();
                 }
+                /* Also add redirected outputs to the chroot */
+                for (auto & i : redirectedOutputs) {
+                    sandboxProfile += (format("\t(subpath \"%1%\")\n") % i.second.c_str()).str();
+                }
                 sandboxProfile += ")\n";
 
                 /* Our inputs (transitive dependencies and any impurities computed above)
@@ -3026,8 +3198,7 @@ void DerivationGoal::registerOutputs()
     InodesSeen inodesSeen;
 
     Path checkSuffix = ".check";
-    bool runDiffHook = settings.runDiffHook;
-    bool keepPreviousRound = settings.keepFailed || runDiffHook;
+    bool keepPreviousRound = settings.keepFailed || settings.runDiffHook;
 
     std::exception_ptr delayedException;
 
@@ -3052,7 +3223,9 @@ void DerivationGoal::registerOutputs()
                         throw SysError(format("moving build output '%1%' from the sandbox to the Nix store") % path);
             }
             if (buildMode != bmCheck) actualPath = worker.store.toRealPath(path);
-        } else {
+        }
+
+        if (needsHashRewrite()) {
             Path redirected = redirectedOutputs[path];
             if (buildMode == bmRepair
                 && redirectedBadOutputs.find(path) != redirectedBadOutputs.end()
@@ -3128,6 +3301,7 @@ void DerivationGoal::registerOutputs()
 
                 /* Throw an error after registering the path as
                    valid. */
+                worker.hashMismatch = true;
                 delayedException = std::make_exception_ptr(
                     BuildError("hash mismatch in fixed-output derivation '%s':\n  wanted: %s\n  got:    %s",
                         dest, h.to_string(), h2.to_string()));
@@ -3170,15 +3344,22 @@ void DerivationGoal::registerOutputs()
             if (!worker.store.isValidPath(path)) continue;
             auto info = *worker.store.queryPathInfo(path);
             if (hash.first != info.narHash) {
-                if (settings.keepFailed) {
+                worker.checkMismatch = true;
+                if (settings.runDiffHook || settings.keepFailed) {
                     Path dst = worker.store.toRealPath(path + checkSuffix);
                     deletePath(dst);
                     if (rename(actualPath.c_str(), dst.c_str()))
                         throw SysError(format("renaming '%1%' to '%2%'") % actualPath % dst);
-                    throw Error(format("derivation '%1%' may not be deterministic: output '%2%' differs from '%3%'")
+
+                    handleDiffHook(
+                        buildUser ? buildUser->getUID() : getuid(),
+                        buildUser ? buildUser->getGID() : getgid(),
+                        path, dst, drvPath, tmpDir);
+
+                    throw NotDeterministic(format("derivation '%1%' may not be deterministic: output '%2%' differs from '%3%'")
                         % drvPath % path % dst);
                 } else
-                    throw Error(format("derivation '%1%' may not be deterministic: output '%2%' differs")
+                    throw NotDeterministic(format("derivation '%1%' may not be deterministic: output '%2%' differs")
                         % drvPath % path);
             }
 
@@ -3239,16 +3420,10 @@ void DerivationGoal::registerOutputs()
                     ? fmt("output '%1%' of '%2%' differs from '%3%' from previous round", i->second.path, drvPath, prev)
                     : fmt("output '%1%' of '%2%' differs from previous round", i->second.path, drvPath);
 
-                auto diffHook = settings.diffHook;
-                if (prevExists && diffHook != "" && runDiffHook) {
-                    try {
-                        auto diff = runProgram(diffHook, true, {prev, i->second.path});
-                        if (diff != "")
-                            printError(chomp(diff));
-                    } catch (Error & error) {
-                        printError("diff hook execution failed: %s", error.what());
-                    }
-                }
+                handleDiffHook(
+                    buildUser ? buildUser->getUID() : getuid(),
+                    buildUser ? buildUser->getGID() : getgid(),
+                    prev, i->second.path, drvPath, tmpDir);
 
                 if (settings.enforceDeterminism)
                     throw NotDeterministic(msg);
@@ -3313,8 +3488,8 @@ void DerivationGoal::checkOutputs(const std::map<Path, ValidPathInfo> & outputs)
         struct Checks
         {
             bool ignoreSelfRefs = false;
-            std::experimental::optional<uint64_t> maxSize, maxClosureSize;
-            std::experimental::optional<Strings> allowedReferences, allowedRequisites, disallowedReferences, disallowedRequisites;
+            std::optional<uint64_t> maxSize, maxClosureSize;
+            std::optional<Strings> allowedReferences, allowedRequisites, disallowedReferences, disallowedRequisites;
         };
 
         /* Compute the closure and closure size of some output. This
@@ -3361,7 +3536,7 @@ void DerivationGoal::checkOutputs(const std::map<Path, ValidPathInfo> & outputs)
                         info.path, closureSize, *checks.maxClosureSize);
             }
 
-            auto checkRefs = [&](const std::experimental::optional<Strings> & value, bool allowed, bool recursive)
+            auto checkRefs = [&](const std::optional<Strings> & value, bool allowed, bool recursive)
             {
                 if (!value) return;
 
@@ -3415,7 +3590,7 @@ void DerivationGoal::checkOutputs(const std::map<Path, ValidPathInfo> & outputs)
                     if (maxClosureSize != output->end())
                         checks.maxClosureSize = maxClosureSize->get<uint64_t>();
 
-                    auto get = [&](const std::string & name) -> std::experimental::optional<Strings> {
+                    auto get = [&](const std::string & name) -> std::optional<Strings> {
                         auto i = output->find(name);
                         if (i != output->end()) {
                             Strings res;
@@ -3885,17 +4060,6 @@ void SubstitutionGoal::tryToRun()
         return;
     }
 
-    /* If the store path is already locked (probably by a
-       DerivationGoal), then put this goal to sleep. Note: we don't
-       acquire a lock here since that breaks addToStore(), so below we
-       handle an AlreadyLocked exception from addToStore(). The check
-       here is just an optimisation to prevent having to redo a
-       download due to a locked path. */
-    if (pathIsLockedByMe(worker.store.toRealPath(storePath))) {
-        worker.waitForAWhile(shared_from_this());
-        return;
-    }
-
     maintainRunningSubstitutions = std::make_unique<MaintainCount<uint64_t>>(worker.runningSubstitutions);
     worker.updateProgress();
 
@@ -3935,12 +4099,6 @@ void SubstitutionGoal::finished()
 
     try {
         promise.get_future().get();
-    } catch (AlreadyLocked & e) {
-        /* Probably a DerivationGoal is already building this store
-           path. Sleep for a while and try again. */
-        state = &SubstitutionGoal::init;
-        worker.waitForAWhile(shared_from_this());
-        return;
     } catch (std::exception & e) {
         printError(e.what());
 
@@ -4016,6 +4174,8 @@ Worker::Worker(LocalStore & store)
     lastWokenUp = steady_time_point::min();
     permanentFailure = false;
     timedOut = false;
+    hashMismatch = false;
+    checkMismatch = false;
 }
 
 
@@ -4321,14 +4481,15 @@ void Worker::waitForInput()
         for (auto & k : fds2) {
             if (FD_ISSET(k, &fds)) {
                 ssize_t rd = read(k, buffer.data(), buffer.size());
-                if (rd == -1) {
-                    if (errno != EINTR)
-                        throw SysError(format("reading from %1%")
-                            % goal->getName());
-                } else if (rd == 0) {
+                // FIXME: is there a cleaner way to handle pt close
+                // than EIO? Is this even standard?
+                if (rd == 0 || (rd == -1 && errno == EIO)) {
                     debug(format("%1%: got EOF") % goal->getName());
                     goal->handleEOF(k);
                     j->fds.erase(k);
+                } else if (rd == -1) {
+                    if (errno != EINTR)
+                        throw SysError("%s: read failed", goal->getName());
                 } else {
                     printMsg(lvlVomit, format("%1%: read %2% bytes")
                         % goal->getName() % rd);
@@ -4375,7 +4536,29 @@ void Worker::waitForInput()
 
 unsigned int Worker::exitStatus()
 {
-    return timedOut ? 101 : (permanentFailure ? 100 : 1);
+    /*
+     * 1100100
+     *    ^^^^
+     *    |||`- timeout
+     *    ||`-- output hash mismatch
+     *    |`--- build failure
+     *    `---- not deterministic
+     */
+    unsigned int mask = 0;
+    bool buildFailure = permanentFailure || timedOut || hashMismatch;
+    if (buildFailure)
+        mask |= 0x04;  // 100
+    if (timedOut)
+        mask |= 0x01;  // 101
+    if (hashMismatch)
+        mask |= 0x02;  // 102
+    if (checkMismatch) {
+        mask |= 0x08;  // 104
+    }
+
+    if (mask)
+        mask |= 0x60;
+    return mask ? mask : 1;
 }
 
 
@@ -4413,6 +4596,11 @@ static void primeCache(Store & store, const PathSet & paths)
     PathSet willBuild, willSubstitute, unknown;
     unsigned long long downloadSize, narSize;
     store.queryMissing(paths, willBuild, willSubstitute, unknown, downloadSize, narSize);
+
+    if (!willBuild.empty() && 0 == settings.maxBuildJobs && getMachines().empty())
+        throw Error(
+            "%d derivations need to be built, but neither local builds ('--max-jobs') "
+            "nor remote builds ('--builders') are enabled", willBuild.size());
 }
 
 

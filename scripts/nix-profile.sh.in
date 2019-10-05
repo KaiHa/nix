@@ -51,14 +51,13 @@ if [ -n "$HOME" ] && [ -n "$USER" ]; then
         unset __nix_defexpr
     fi
 
-    # Append ~/.nix-defexpr/channels/nixpkgs to $NIX_PATH so that
-    # <nixpkgs> paths work when the user has fetched the Nixpkgs
-    # channel.
-    export NIX_PATH="${NIX_PATH:+$NIX_PATH:}nixpkgs=$HOME/.nix-defexpr/channels/nixpkgs"
+    # Append ~/.nix-defexpr/channels to $NIX_PATH so that <nixpkgs>
+    # paths work when the user has fetched the Nixpkgs channel.
+    export NIX_PATH=${NIX_PATH:+$NIX_PATH:}$HOME/.nix-defexpr/channels
 
     # Set up environment.
     # This part should be kept in sync with nixpkgs:nixos/modules/programs/environment.nix
-    NIX_PROFILES="@localstatedir@/nix/profiles/default $NIX_USER_PROFILE_DIR"
+    export NIX_PROFILES="@localstatedir@/nix/profiles/default $HOME/.nix-profile"
 
     # Set $NIX_SSL_CERT_FILE so that Nixpkgs applications like curl work.
     if [ -e /etc/ssl/certs/ca-certificates.crt ]; then # NixOS, Ubuntu, Debian, Gentoo, Arch
@@ -75,10 +74,10 @@ if [ -n "$HOME" ] && [ -n "$USER" ]; then
         export NIX_SSL_CERT_FILE="$NIX_LINK/etc/ca-bundle.crt"
     fi
 
-    if [ -n "${MANPATH}" ]; then
+    if [ -n "${MANPATH-}" ]; then
         export MANPATH="$NIX_LINK/share/man:$MANPATH"
     fi
 
     export PATH="$NIX_LINK/bin:$__savedpath"
-    unset __savedpath NIX_LINK NIX_USER_PROFILE_DIR NIX_PROFILES
+    unset __savedpath NIX_LINK NIX_USER_PROFILE_DIR
 fi

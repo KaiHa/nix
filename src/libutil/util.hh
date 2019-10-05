@@ -14,7 +14,7 @@
 #include <cstdio>
 #include <map>
 #include <sstream>
-#include <experimental/optional>
+#include <optional>
 #include <future>
 
 #ifndef HAVE_STRUCT_DIRENT_D_TYPE
@@ -28,6 +28,10 @@ namespace nix {
 
 struct Sink;
 struct Source;
+
+
+/* The system for which Nix is compiled. */
+extern const std::string nativeSystem;
 
 
 /* Return an environment variable. */
@@ -250,7 +254,6 @@ struct ProcessOptions
     bool dieWithParent = true;
     bool runExitHandlers = false;
     bool allowVfork = true;
-    bool restoreMountNamespace = true;
 };
 
 pid_t startProcess(std::function<void()> fun, const ProcessOptions & options = ProcessOptions());
@@ -260,16 +263,21 @@ pid_t startProcess(std::function<void()> fun, const ProcessOptions & options = P
    shell backtick operator). */
 string runProgram(Path program, bool searchPath = false,
     const Strings & args = Strings(),
-    const std::experimental::optional<std::string> & input = {});
+    const std::optional<std::string> & input = {});
 
 struct RunOptions
 {
+    std::optional<uid_t> uid;
+    std::optional<uid_t> gid;
+    std::optional<Path> chdir;
+    std::optional<std::map<std::string, std::string>> environment;
     Path program;
     bool searchPath = true;
     Strings args;
-    std::experimental::optional<std::string> input;
+    std::optional<std::string> input;
     Source * standardIn = nullptr;
     Sink * standardOut = nullptr;
+    bool mergeStderrToStdout = false;
     bool _killStderr = false;
 
     RunOptions(const Path & program, const Strings & args)
@@ -402,6 +410,7 @@ void ignoreException();
 /* Some ANSI escape sequences. */
 #define ANSI_NORMAL "\e[0m"
 #define ANSI_BOLD "\e[1m"
+#define ANSI_FAINT "\e[2m"
 #define ANSI_RED "\e[31;1m"
 #define ANSI_GREEN "\e[32;1m"
 #define ANSI_BLUE "\e[34;1m"
@@ -436,21 +445,34 @@ string get(const T & map, const string & key, const string & def = "")
    type T or an exception. (We abuse std::future<T> to pass the value or
    exception.) */
 template<typename T>
-struct Callback
+class Callback
 {
     std::function<void(std::future<T>)> fun;
+    std::atomic_flag done = ATOMIC_FLAG_INIT;
+
+public:
 
     Callback(std::function<void(std::future<T>)> fun) : fun(fun) { }
 
-    void operator()(T && t) const
+    Callback(Callback && callback) : fun(std::move(callback.fun))
     {
+        auto prev = callback.done.test_and_set();
+        if (prev) done.test_and_set();
+    }
+
+    void operator()(T && t) noexcept
+    {
+        auto prev = done.test_and_set();
+        assert(!prev);
         std::promise<T> promise;
         promise.set_value(std::move(t));
         fun(promise.get_future());
     }
 
-    void rethrow(const std::exception_ptr & exc = std::current_exception()) const
+    void rethrow(const std::exception_ptr & exc = std::current_exception()) noexcept
     {
+        auto prev = done.test_and_set();
+        assert(!prev);
         std::promise<T> promise;
         promise.set_exception(exc);
         fun(promise.get_future());
@@ -513,15 +535,6 @@ std::pair<unsigned short, unsigned short> getWindowSize();
 typedef std::function<bool(const Path & path)> PathFilter;
 
 extern PathFilter defaultPathFilter;
-
-
-/* Save the current mount namespace. Ignored if called more than
-   once. */
-void saveMountNamespace();
-
-/* Restore the mount namespace saved by saveMountNamespace(). Ignored
-   if saveMountNamespace() was never called. */
-void restoreMountNamespace();
 
 
 }

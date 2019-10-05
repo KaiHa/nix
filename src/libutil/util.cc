@@ -16,6 +16,7 @@
 #include <future>
 
 #include <fcntl.h>
+#include <grp.h>
 #include <limits.h>
 #include <pwd.h>
 #include <sys/ioctl.h>
@@ -36,6 +37,9 @@ extern char * * environ;
 
 
 namespace nix {
+
+
+const std::string nativeSystem = SYSTEM;
 
 
 BaseError & BaseError::addPrefix(const FormatOrString & fs)
@@ -78,6 +82,15 @@ void clearEnv()
 {
     for (auto & name : getEnv())
         unsetenv(name.first.c_str());
+}
+
+void replaceEnv(std::map<std::string, std::string> newEnv)
+{
+    clearEnv();
+    for (auto newEnvVar : newEnv)
+    {
+        setenv(newEnvVar.first.c_str(), newEnvVar.second.c_str(), 1);
+    }
 }
 
 
@@ -384,7 +397,7 @@ static void _deletePath(const Path & path, unsigned long long & bytesFreed)
     }
 
     if (!S_ISDIR(st.st_mode) && st.st_nlink == 1)
-        bytesFreed += st.st_blocks * 512;
+        bytesFreed += st.st_size;
 
     if (S_ISDIR(st.st_mode)) {
         /* Make the directory accessible. */
@@ -936,8 +949,6 @@ pid_t startProcess(std::function<void()> fun, const ProcessOptions & options)
                 throw SysError("setting death signal");
 #endif
             restoreAffinity();
-            if (options.restoreMountNamespace)
-                restoreMountNamespace();
             fun();
         } catch (std::exception & e) {
             try {
@@ -967,7 +978,7 @@ std::vector<char *> stringsToCharPtrs(const Strings & ss)
 
 
 string runProgram(Path program, bool searchPath, const Strings & args,
-    const std::experimental::optional<std::string> & input)
+    const std::optional<std::string> & input)
 {
     RunOptions opts(program, args);
     opts.searchPath = searchPath;
@@ -1017,12 +1028,34 @@ void runProgram2(const RunOptions & options)
     if (options.standardOut) out.create();
     if (source) in.create();
 
+    ProcessOptions processOptions;
+    // vfork implies that the environment of the main process and the fork will
+    // be shared (technically this is undefined, but in practice that's the
+    // case), so we can't use it if we alter the environment
+    if (options.environment)
+        processOptions.allowVfork = false;
+
     /* Fork. */
     Pid pid = startProcess([&]() {
+        if (options.environment)
+            replaceEnv(*options.environment);
         if (options.standardOut && dup2(out.writeSide.get(), STDOUT_FILENO) == -1)
             throw SysError("dupping stdout");
+        if (options.mergeStderrToStdout)
+            if (dup2(STDOUT_FILENO, STDERR_FILENO) == -1)
+                throw SysError("cannot dup stdout into stderr");
         if (source && dup2(in.readSide.get(), STDIN_FILENO) == -1)
             throw SysError("dupping stdin");
+
+        if (options.chdir && chdir((*options.chdir).c_str()) == -1)
+            throw SysError("chdir failed");
+        if (options.gid && setgid(*options.gid) == -1)
+            throw SysError("setgid failed");
+        /* Drop all other groups if we're setgid. */
+        if (options.gid && setgroups(0, 0) == -1)
+            throw SysError("setgroups failed");
+        if (options.uid && setuid(*options.uid) == -1)
+            throw SysError("setuid failed");
 
         Strings args_(options.args);
         args_.push_front(options.program);
@@ -1035,7 +1068,7 @@ void runProgram2(const RunOptions & options)
             execv(options.program.c_str(), stringsToCharPtrs(args_).data());
 
         throw SysError("executing '%1%'", options.program);
-    });
+    }, processOptions);
 
     out.writeSide = -1;
 
@@ -1504,28 +1537,6 @@ std::unique_ptr<InterruptCallback> createInterruptCallback(std::function<void()>
     res->it--;
 
     return std::unique_ptr<InterruptCallback>(res.release());
-}
-
-static AutoCloseFD fdSavedMountNamespace;
-
-void saveMountNamespace()
-{
-#if __linux__
-    std::once_flag done;
-    std::call_once(done, []() {
-        fdSavedMountNamespace = open("/proc/self/ns/mnt", O_RDONLY);
-        if (!fdSavedMountNamespace)
-            throw SysError("saving parent mount namespace");
-    });
-#endif
-}
-
-void restoreMountNamespace()
-{
-#if __linux__
-    if (fdSavedMountNamespace && setns(fdSavedMountNamespace.get(), CLONE_NEWNS) == -1)
-        throw SysError("restoring parent mount namespace");
-#endif
 }
 
 }

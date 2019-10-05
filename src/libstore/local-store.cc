@@ -366,8 +366,6 @@ void LocalStore::makeStoreWritable()
         throw SysError("getting info about the Nix store mount point");
 
     if (stat.f_flag & ST_RDONLY) {
-        saveMountNamespace();
-
         if (unshare(CLONE_NEWNS) == -1)
             throw SysError("setting up a private mount namespace");
 
@@ -631,7 +629,7 @@ uint64_t LocalStore::addValidPath(State & state,
 
 
 void LocalStore::queryPathInfoUncached(const Path & path,
-    Callback<std::shared_ptr<ValidPathInfo>> callback)
+    Callback<std::shared_ptr<ValidPathInfo>> callback) noexcept
 {
     try {
         auto info = std::make_shared<ValidPathInfo>();
@@ -1212,7 +1210,8 @@ bool LocalStore::verifyStore(bool checkContents, RepairFlag repair)
 
     bool errors = false;
 
-    /* Acquire the global GC lock to prevent a garbage collection. */
+    /* Acquire the global GC lock to get a consistent snapshot of
+       existing and valid paths. */
     AutoCloseFD fdGCLock = openGCLock(ltWrite);
 
     PathSet store;
@@ -1223,12 +1222,10 @@ bool LocalStore::verifyStore(bool checkContents, RepairFlag repair)
 
     PathSet validPaths2 = queryAllValidPaths(), validPaths, done;
 
+    fdGCLock = -1;
+
     for (auto & i : validPaths2)
         verifyPath(i, store, done, validPaths, repair, errors);
-
-    /* Release the GC lock so that checking content hashes (which can
-       take ages) doesn't block the GC or builds. */
-    fdGCLock = -1;
 
     /* Optionally, check the content hashes (slow). */
     if (checkContents) {
