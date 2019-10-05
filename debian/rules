@@ -24,7 +24,7 @@ export GLOBAL_CXXFLAGS += -fstack-protector-strong -Wformat -Werror=format-secur
 
 
 %:
-	dh $@ --with=autoreconf
+	dh $@
 
 
 override_dh_auto_configure:
