@@ -3,6 +3,7 @@ Section: devel
 Priority: optional
 Maintainer: Thomas Koch <thomas@koch.ro>
 Build-Depends: debhelper (>= 11),
+               autoconf-archive,
                bison,
                curl,
                docbook-xsl-ns,
