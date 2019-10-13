@@ -1,13 +1,5 @@
-include: https://salsa.debian.org/salsa-ci-team/pipeline/raw/master/salsa-ci.yml
+# Find the documentation at https://salsa.debian.org/salsa-ci-team/pipeline
 
-build:
-    extends: .build-unstable
-
-lintian:
-    extends: .test-lintian
-
-blhc:
-    extends: .test-blhc
-
-piuparts:
-    extends: .test-piuparts
+include:
+  - https://salsa.debian.org/salsa-ci-team/pipeline/raw/master/salsa-ci.yml
+  - https://salsa.debian.org/salsa-ci-team/pipeline/raw/master/pipeline-jobs.yml
