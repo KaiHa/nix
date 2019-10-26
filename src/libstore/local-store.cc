@@ -70,15 +70,17 @@ LocalStore::LocalStore(const Params & params)
         createSymlink(profilesDir, gcRootsDir + "/profiles");
     }
 
+    for (auto & perUserDir : {profilesDir + "/per-user", gcRootsDir + "/per-user"}) {
+        createDirs(perUserDir);
+        if (chmod(perUserDir.c_str(), 0755) == -1)
+            throw SysError("could not set permissions on '%s' to 755", perUserDir);
+    }
+
+    createUser(getUserName(), getuid());
+
     /* Optionally, create directories and set permissions for a
        multi-user install. */
     if (getuid() == 0 && settings.buildUsersGroup != "") {
-
-        Path perUserDir = profilesDir + "/per-user";
-        createDirs(perUserDir);
-        if (chmod(perUserDir.c_str(), 01777) == -1)
-            throw SysError(format("could not set permissions on '%1%' to 1777") % perUserDir);
-
         mode_t perm = 01775;
 
         struct group * gr = getgrnam(settings.buildUsersGroup.get().c_str());
@@ -879,8 +881,8 @@ void LocalStore::querySubstitutablePathInfos(const PathSet & paths,
                     info->references,
                     narInfo ? narInfo->fileSize : 0,
                     info->narSize};
-            } catch (InvalidPath) {
-            } catch (SubstituterDisabled) {
+            } catch (InvalidPath &) {
+            } catch (SubstituterDisabled &) {
             } catch (Error & e) {
                 if (settings.tryFallback)
                     printError(e.what());
@@ -1429,6 +1431,21 @@ void LocalStore::signPathInfo(ValidPathInfo & info)
     for (auto & secretKeyFile : secretKeyFiles.get()) {
         SecretKey secretKey(readFile(secretKeyFile));
         info.sign(secretKey);
+    }
+}
+
+
+void LocalStore::createUser(const std::string & userName, uid_t userId)
+{
+    for (auto & dir : {
+        fmt("%s/profiles/per-user/%s", stateDir, userName),
+        fmt("%s/gcroots/per-user/%s", stateDir, userName)
+    }) {
+        createDirs(dir);
+        if (chmod(dir.c_str(), 0755) == -1)
+            throw SysError("changing permissions of directory '%s'", dir);
+        if (chown(dir.c_str(), userId, getgid()) == -1)
+            throw SysError("changing owner of directory '%s'", dir);
     }
 }
 

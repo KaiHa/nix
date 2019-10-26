@@ -170,18 +170,6 @@ if builtins ? getEnv then builtins.getEnv "PATH" else ""</programlisting>
   </varlistentry>
 
 
-  <varlistentry xml:id='builtin-splitVersion'>
-    <term><function>builtins.splitVersion</function>
-    <replaceable>s</replaceable></term>
-
-    <listitem><para>Split a string representing a version into its
-    components, by the same version splitting logic underlying the
-    version comparison in <link linkend="ssec-version-comparisons">
-    <command>nix-env -u</command></link>.</para></listitem>
-
-  </varlistentry>
-
-
   <varlistentry xml:id='builtin-concatLists'>
     <term><function>builtins.concatLists</function>
     <replaceable>lists</replaceable></term>
@@ -301,7 +289,7 @@ if builtins ? getEnv then builtins.getEnv "PATH" else ""</programlisting>
 
     <listitem><para>Return element <replaceable>n</replaceable> from
     the list <replaceable>xs</replaceable>.  Elements are counted
-    starting from 0.  A fatal error occurs in the index is out of
+    starting from 0.  A fatal error occurs if the index is out of
     bounds.</para></listitem>
 
   </varlistentry>
@@ -448,7 +436,7 @@ stdenv.mkDerivation { … }
       <example>
         <title>Fetching an arbitrary ref</title>
         <programlisting>builtins.fetchGit {
-  url = "https://gitub.com/NixOS/nix.git";
+  url = "https://github.com/NixOS/nix.git";
   ref = "refs/heads/0.5-release";
 }</programlisting>
       </example>
@@ -499,11 +487,8 @@ stdenv.mkDerivation { … }
         <title>Fetching a tag</title>
         <programlisting>builtins.fetchGit {
   url = "https://github.com/nixos/nix.git";
-  ref = "tags/1.9";
+  ref = "refs/tags/1.9";
 }</programlisting>
-        <note><para>Due to a bug (<link
-        xlink:href="https://github.com/NixOS/nix/issues/2385">#2385</link>),
-        only non-annotated tags can be fetched.</para></note>
       </example>
 
       <example>
@@ -1275,6 +1260,19 @@ Evaluates to <literal>[ "  " [ "FOO" ] "   " ]</literal>.
     </para></listitem>
   </varlistentry>
 
+
+  <varlistentry xml:id='builtin-splitVersion'>
+    <term><function>builtins.splitVersion</function>
+    <replaceable>s</replaceable></term>
+
+    <listitem><para>Split a string representing a version into its
+    components, by the same version splitting logic underlying the
+    version comparison in <link linkend="ssec-version-comparisons">
+    <command>nix-env -u</command></link>.</para></listitem>
+
+  </varlistentry>
+
+
   <varlistentry xml:id='builtin-stringLength'>
     <term><function>builtins.stringLength</function>
     <replaceable>e</replaceable></term>
@@ -1468,7 +1466,7 @@ in foo</programlisting>
       <listitem><para>A set containing <literal>{ __toString = self: ...; }</literal>.</para></listitem>
       <listitem><para>An integer.</para></listitem>
       <listitem><para>A list, in which case the string representations of its elements are joined with spaces.</para></listitem>
-      <listitem><para>A Boolean (<literal>false</literal> yields <literal>""</literal>, <literal>true</literal> yields <literal>"1"</literal>.</para></listitem>
+      <listitem><para>A Boolean (<literal>false</literal> yields <literal>""</literal>, <literal>true</literal> yields <literal>"1"</literal>).</para></listitem>
       <listitem><para><literal>null</literal>, which yields the empty string.</para></listitem>
     </itemizedlist>
     </listitem>
@@ -1607,12 +1605,18 @@ stdenv.mkDerivation (rec {
     <term><function>builtins.tryEval</function>
     <replaceable>e</replaceable></term>
 
-    <listitem><para>Try to evaluate <replaceable>e</replaceable>.
+    <listitem><para>Try to shallowly evaluate <replaceable>e</replaceable>.
     Return a set containing the attributes <literal>success</literal>
     (<literal>true</literal> if <replaceable>e</replaceable> evaluated
     successfully, <literal>false</literal> if an error was thrown) and
     <literal>value</literal>, equalling <replaceable>e</replaceable>
-    if successful and <literal>false</literal> otherwise.
+    if successful and <literal>false</literal> otherwise. Note that this
+    doesn't evaluate <replaceable>e</replaceable> deeply, so
+    <literal>let e = { x = throw ""; }; in (builtins.tryEval e).success
+    </literal> will be <literal>true</literal>. Using <literal>builtins.deepSeq
+    </literal> one can get the expected result: <literal>let e = { x = throw "";
+    }; in (builtins.tryEval (builtins.deepSeq e e)).success</literal> will be
+    <literal>false</literal>.
     </para></listitem>
 
   </varlistentry>
