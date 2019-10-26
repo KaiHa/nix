@@ -60,7 +60,8 @@ Description: Purely functional package manager (binaries)
 Package: nix-setup-systemd
 Architecture: any
 Depends: nix-bin,
-         libpam-systemd
+         libpam-systemd,
+         ${misc:Depends}
 Description: Purely functional package manager (systemd setup)
  A powerful package manager for Linux and other Unix systems that
  makes package management reliable and reproducible. Nix provides
