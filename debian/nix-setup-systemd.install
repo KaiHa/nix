@@ -2,3 +2,5 @@ debian/nix.install.files/user.tmpfiles.d/* usr/share/user-tmpfiles.d
 debian/nix.install.files/user.environment.d/* usr/lib/environment.d
 debian/nix.install.files/nix.conf etc/nix
 debian/nix.install.files/tmpfiles.d/* usr/lib/tmpfiles.d
+lib/systemd/system/nix-daemon.service
+lib/systemd/system/nix-daemon.socket

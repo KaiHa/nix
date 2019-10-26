@@ -1,0 +1,5 @@
+etc/init/nix-daemon.conf
+etc/profile.d/nix-daemon.sh
+etc/profile.d/nix.sh
+usr/include/*
+usr/lib/pkgconfig/*

@@ -35,25 +35,8 @@ override_dh_auto_configure:
 	  --libdir=/usr/lib/nix
 
 
-override_dh_auto_install:
-	dh_auto_install
-	# remove deprecated upstart configuration
-	rm -rf debian/nix/etc/init/
-	# install pkgconfig configuration
-	mkdir -p debian/nix/usr/lib/$(DEB_HOST_MULTIARCH)/pkgconfig
-	mv debian/nix/usr/lib/pkgconfig/nix-expr.pc  debian/nix/usr/lib/$(DEB_HOST_MULTIARCH)/pkgconfig/nix-expr.pc
-	mv debian/nix/usr/lib/pkgconfig/nix-main.pc  debian/nix/usr/lib/$(DEB_HOST_MULTIARCH)/pkgconfig/nix-main.pc
-	mv debian/nix/usr/lib/pkgconfig/nix-store.pc debian/nix/usr/lib/$(DEB_HOST_MULTIARCH)/pkgconfig/nix-store.pc
-	# Setup of the user environment is done with systemd
-	rm debian/nix/etc/profile.d/nix.sh
-	rm debian/nix/etc/profile.d/nix-daemon.sh
-	rmdir debian/nix/etc/profile.d
-
-
-override_dh_installinit:
-	dh_installinit -pnix --name=nix-daemon
-	# fix package-contains-ancient-file lintian warning
-	touch --reference=debian/nix/lib/systemd/system/nix-daemon.service debian/nix/etc/init.d/nix-daemon
+override_dh_missing:
+	dh_missing --fail-missing
 
 
 override_dh_auto_clean:

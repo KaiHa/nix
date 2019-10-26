@@ -33,7 +33,7 @@ Homepage: https://nixos.org/nix
 Vcs-Browser: https://salsa.debian.org/debian/nix
 Vcs-Git: https://salsa.debian.org/debian/nix.git
 
-Package: nix
+Package: nix-bin
 Architecture: any
 Depends: bzip2,
          curl,
@@ -43,13 +43,32 @@ Depends: bzip2,
          perl,
          xz-utils,
          ${shlibs:Depends}, ${misc:Depends}, ${perl:Depends}
-Recommends: libpam-systemd
-Description: Purely functional package manager
+Recommends: nix-setup-systemd
+Description: Purely functional package manager (binaries)
  A powerful package manager for Linux and other Unix systems that
  makes package management reliable and reproducible. Nix provides
  atomic upgrades and rollbacks, side-by-side installation of multiple
  versions of a package, multi-user package management and easy setup
  of build environments.
+ .
+ NOTE: This package only provides the nix binaries. One still needs
+ to setup directories, environments variables and configuration files
+ to use nix as described in the nix manual.
+ The package nix-setup-systemd provides such a setup using systemd
+ mechanisms.
+
+Package: nix-setup-systemd
+Architecture: any
+Depends: nix-bin,
+         libpam-systemd
+Description: Purely functional package manager (systemd setup)
+ A powerful package manager for Linux and other Unix systems that
+ makes package management reliable and reproducible. Nix provides
+ atomic upgrades and rollbacks, side-by-side installation of multiple
+ versions of a package, multi-user package management and easy setup
+ of build environments.
+ .
+ This package uses systemd mechanisms to setup the nix.
  .
  NOTE: This package creates (via tmpfiles.d) a top-level folder /nix.
  This is not compliant with the file hierarchy standard but has been

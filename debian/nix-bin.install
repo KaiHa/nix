@@ -1,0 +1,4 @@
+usr/bin/*
+usr/share/nix/*
+usr/lib/nix/*
+usr/lib/x86_64-linux-gnu/nix/build-remote
