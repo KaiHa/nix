@@ -1,0 +1,6 @@
+#!/usr/bin/make -f
+
+
+all:
+	service nix-daemon start
+	service nix-daemon status

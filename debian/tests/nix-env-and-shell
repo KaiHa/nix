@@ -1,0 +1,16 @@
+#!/bin/sh
+
+set -ex
+
+# The tests might be run on a system without systemd, therefore export
+# the environment variables manually.
+while read item; do eval export $item; done < /usr/lib/environment.d/nix-daemon.conf
+
+mkdir -p /etc/nix/
+echo "sandbox = false" >> /etc/nix/nix.conf
+service nix-daemon restart
+nix-channel --add https://nixos.org/channels/nixpkgs-unstable nixpkgs
+nix-channel --update
+nix-shell -p nix-du --run "nix-du --help" '<nixpkgs>'
+nix-env -iA nixpkgs.nix-du
+nix-du --help
