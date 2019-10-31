@@ -3,5 +3,5 @@ Depends: @, make, systemd
 Restrictions: isolation-container, needs-root
 
 Tests: nix-env-and-shell
-Depends: @, ca-certificates, make
+Depends: @, ca-certificates
 Restrictions: allow-stderr, isolation-container, needs-recommends, needs-root
