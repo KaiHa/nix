@@ -60,7 +60,11 @@ struct NixRepl
     NixRepl(const Strings & searchPath, nix::ref<Store> store);
     ~NixRepl();
     void mainLoop(const std::vector<std::string> & files);
+#ifdef READLINE
+    StringSet * completePrefix(string prefix);
+#else
     StringSet completePrefix(string prefix);
+#endif
     bool getLine(string & input, const std::string &prompt);
     Path getDerivationPath(Value & v);
     bool processLine(string line);
@@ -137,6 +141,33 @@ NixRepl::~NixRepl()
 
 static NixRepl * curRepl; // ugly
 
+#ifdef READLINE
+static char * completionFuncReadline(const char * text, int state)
+{
+    static StringSet * matches = nullptr;
+
+    if (state == 0 || !matches) {
+        if (matches) {
+            delete matches;
+        }
+        matches = curRepl->completePrefix(text);
+    }
+
+    auto it = matches->begin();
+    while (state > 0 && it != matches->end()) {
+        it++;
+        state--;
+    }
+
+    if (it == matches->end()) {
+        return nullptr;
+    }
+    else {
+        return strdup(it->c_str());
+    }
+}
+
+#else
 static char * completionCallback(char * s, int *match) {
   auto possible = curRepl->completePrefix(s);
   if (possible.size() == 1) {
@@ -198,6 +229,7 @@ static int listPossibleCallback(char *s, char ***avp) {
 
   return ac;
 }
+#endif
 
 namespace {
     // Used to communicate to NixRepl::getLine whether a signal occurred in ::readline.
@@ -227,7 +259,9 @@ void NixRepl::mainLoop(const std::vector<std::string> & files)
 #endif
     read_history(historyFile.c_str());
     curRepl = this;
-#ifndef READLINE
+#ifdef READLINE
+    rl_completion_entry_function = completionFuncReadline;
+#else
     rl_set_complete_func(completionCallback);
     rl_set_list_possib_func(listPossibleCallback);
 #endif
@@ -307,11 +341,15 @@ bool NixRepl::getLine(string & input, const std::string &prompt)
     return true;
 }
 
-
+#ifdef READLINE
+StringSet * NixRepl::completePrefix(string prefix)
+{
+    StringSet * completions = new StringSet;
+#else
 StringSet NixRepl::completePrefix(string prefix)
 {
     StringSet completions;
-
+#endif
     size_t start = prefix.find_last_of(" \n\r\t(){}[]");
     std::string prev, cur;
     if (start == std::string::npos) {
@@ -330,7 +368,11 @@ StringSet NixRepl::completePrefix(string prefix)
             auto prefix2 = std::string(cur, slash + 1);
             for (auto & entry : readDirectory(dir == "" ? "/" : dir)) {
                 if (entry.name[0] != '.' && hasPrefix(entry.name, prefix2))
+#ifdef READLINE
+                    completions->insert(prev + dir + "/" + entry.name);
+#else
                     completions.insert(prev + dir + "/" + entry.name);
+#endif
             }
         } catch (Error &) {
         }
@@ -339,7 +381,11 @@ StringSet NixRepl::completePrefix(string prefix)
         StringSet::iterator i = varNames.lower_bound(cur);
         while (i != varNames.end()) {
             if (string(*i, 0, cur.size()) != cur) break;
+#ifdef READLINE
+            completions->insert(prev + *i);
+#else
             completions.insert(prev + *i);
+#endif
             i++;
         }
     } else {
@@ -358,7 +404,11 @@ StringSet NixRepl::completePrefix(string prefix)
             for (auto & i : *v.attrs) {
                 string name = i.name;
                 if (string(name, 0, cur2.size()) != cur2) continue;
+#ifdef READLINE
+                completions->insert(prev + expr + "." + name);
+#else
                 completions.insert(prev + expr + "." + name);
+#endif
             }
 
         } catch (ParseError & e) {
