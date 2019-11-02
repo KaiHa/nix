@@ -60,11 +60,7 @@ struct NixRepl
     NixRepl(const Strings & searchPath, nix::ref<Store> store);
     ~NixRepl();
     void mainLoop(const std::vector<std::string> & files);
-#ifdef READLINE
-    StringSet * completePrefix(string prefix);
-#else
     StringSet completePrefix(string prefix);
-#endif
     bool getLine(string & input, const std::string &prompt);
     Path getDerivationPath(Value & v);
     bool processLine(string line);
@@ -144,22 +140,19 @@ static NixRepl * curRepl; // ugly
 #ifdef READLINE
 static char * completionFuncReadline(const char * text, int state)
 {
-    static StringSet * matches = nullptr;
+    static StringSet matches = curRepl->completePrefix(text);
 
-    if (state == 0 || !matches) {
-        if (matches) {
-            delete matches;
-        }
+    if (state == 0) {
         matches = curRepl->completePrefix(text);
     }
 
-    auto it = matches->begin();
-    while (state > 0 && it != matches->end()) {
+    auto it = matches.begin();
+    while (state > 0 && it != matches.end()) {
         it++;
         state--;
     }
 
-    if (it == matches->end()) {
+    if (it == matches.end()) {
         return nullptr;
     }
     else {
@@ -346,15 +339,11 @@ bool NixRepl::getLine(string & input, const std::string &prompt)
     return true;
 }
 
-#ifdef READLINE
-StringSet * NixRepl::completePrefix(string prefix)
-{
-    StringSet * completions = new StringSet;
-#else
+
 StringSet NixRepl::completePrefix(string prefix)
 {
     StringSet completions;
-#endif
+
     size_t start = prefix.find_last_of(" \n\r\t(){}[]");
     std::string prev, cur;
     if (start == std::string::npos) {
@@ -373,11 +362,7 @@ StringSet NixRepl::completePrefix(string prefix)
             auto prefix2 = std::string(cur, slash + 1);
             for (auto & entry : readDirectory(dir == "" ? "/" : dir)) {
                 if (entry.name[0] != '.' && hasPrefix(entry.name, prefix2))
-#ifdef READLINE
-                    completions->insert(prev + dir + "/" + entry.name);
-#else
                     completions.insert(prev + dir + "/" + entry.name);
-#endif
             }
         } catch (Error &) {
         }
@@ -386,11 +371,7 @@ StringSet NixRepl::completePrefix(string prefix)
         StringSet::iterator i = varNames.lower_bound(cur);
         while (i != varNames.end()) {
             if (string(*i, 0, cur.size()) != cur) break;
-#ifdef READLINE
-            completions->insert(prev + *i);
-#else
             completions.insert(prev + *i);
-#endif
             i++;
         }
     } else {
@@ -409,11 +390,7 @@ StringSet NixRepl::completePrefix(string prefix)
             for (auto & i : *v.attrs) {
                 string name = i.name;
                 if (string(name, 0, cur2.size()) != cur2) continue;
-#ifdef READLINE
-                completions->insert(prev + expr + "." + name);
-#else
                 completions.insert(prev + expr + "." + name);
-#endif
             }
 
         } catch (ParseError & e) {
